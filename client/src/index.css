@@ -1,0 +1,106 @@
+@import './styles/theme.css';
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #root {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  body {
+    @apply bg-[#F5F7FA] text-navy-800 font-sans m-0 antialiased;
+    color: var(--es-text-primary);
+  }
+
+  /* Accessible keyboard focus indicator across all interactive controls */
+  a:focus-visible,
+  button:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline: 2px solid var(--es-primary);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  .es-surface {
+    background-color: var(--es-surface);
+    border: 1px solid var(--es-border);
+    border-radius: var(--es-radius-lg);
+    box-shadow: var(--es-shadow-xs);
+  }
+
+  .es-eyebrow {
+    @apply text-[11px] font-bold uppercase tracking-wider;
+    color: var(--es-primary);
+  }
+
+  .es-btn-primary {
+    @apply inline-flex items-center justify-center font-semibold text-white transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed;
+    background-color: var(--es-primary);
+    border-radius: var(--es-radius-md);
+  }
+  .es-btn-primary:hover:not(:disabled) {
+    background-color: var(--es-primary-hover);
+  }
+
+  .es-btn-secondary {
+    @apply inline-flex items-center justify-center font-semibold bg-white transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed;
+    color: var(--es-text-secondary);
+    border: 1px solid var(--es-border-strong);
+    border-radius: var(--es-radius-md);
+  }
+  .es-btn-secondary:hover:not(:disabled) {
+    background-color: var(--es-surface-muted);
+    color: var(--es-text-primary);
+  }
+}
+
+/* Respect user reduced-motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Clean print formatting for student seating slips */
+@media print {
+  body {
+    background: #FFFFFF !important;
+  }
+}
+
+/* Subtle institutional scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #F8FAFC;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
+}

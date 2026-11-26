@@ -1,0 +1,44 @@
+/* ExamSeat AI — RGMCET Academic Design System Tokens */
+:root {
+  /* Color Palette */
+  --es-primary: #2457A7;
+  --es-primary-hover: #1B4282;
+  --es-primary-soft: #EEF4FF;
+  --es-navy-900: #0F172A;
+  --es-navy-800: #14243A;
+  --es-canvas: #F5F7FA;
+  --es-surface: #FFFFFF;
+  --es-surface-muted: #F8FAFC;
+  --es-border: #E2E8F0;
+  --es-border-strong: #CBD5E1;
+
+  /* Text Contrast Scale (WCAG AA compliant on white/slate-50) */
+  --es-text-primary: #14243A;
+  --es-text-secondary: #334155;
+  --es-text-muted: #475569;
+
+  /* Semantic Status */
+  --es-success: #198754;
+  --es-warning: #B45309;
+  --es-danger: #DC2626;
+
+  /* Radii & Elevation */
+  --es-radius-sm: 0.5rem;
+  --es-radius-md: 0.625rem;
+  --es-radius-lg: 0.875rem;
+  --es-shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --es-shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.07), 0 1px 2px rgba(15, 23, 42, 0.04);
+
+  /* Motion Timing */
+  --es-transition-fast: 150ms cubic-bezier(0.2, 0, 0, 1);
+
+  /* Backward-compatible variable aliases */
+  --color-primary: var(--es-primary);
+  --color-primary-hover: var(--es-primary-hover);
+  --color-navy: var(--es-navy-800);
+  --color-accent-green: var(--es-success);
+  --color-accent-amber: #D97706;
+  --color-accent-red: var(--es-danger);
+  --color-bg-light: var(--es-canvas);
+  --color-border-subtle: var(--es-border);
+}

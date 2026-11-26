@@ -1,0 +1,649 @@
+const mongoose = require('mongoose');
+const Exam = require('../models/Exam');
+const Allocation = require('../models/Allocation');
+const Classroom = require('../models/Classroom');
+const Student = require('../models/Student');
+const StudentEnrollment = require('../models/StudentEnrollment');
+const publicationScheduler = require('../scheduler');
+const classroomMappingService = require('../services/classroomMappingService');
+const { isDbConnectivityError } = require('../config/db');
+const {
+  normalizeDateStr,
+  addDaysToIsoDate,
+  parseKolkataDateTime,
+  parseExamDateRange,
+  formatTime12h,
+  formatExamTimeRange,
+  getStudentAccessTime,
+  getSeatingWindowCloseTime,
+  hasSeatingWindowClosed,
+  getEffectiveNow,
+  getTodayKolkataDate,
+  isExamConcluded,
+} = require('../utils/dateTimeUtils');
+
+function formatIsoDateKolkata(dt) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(dt);
+}
+
+/**
+ * Authoritatively resolves an examination's Asia/Kolkata timestamps from stored examDate + startTime/endTime.
+ * Implements the seating visibility rule:
+ *   studentAccessTime = startDateTime - 20 minutes
+ *   windowCloseTime   = min(startDateTime + 10 minutes, endDateTime)
+ * Window stays open for [studentAccessTime, windowCloseTime).
+ */
+function resolveExamWindow(ex, effectiveNow) {
+  let startDateTime = null;
+  let endDateTime = null;
+
+  if (ex.examDate && ex.startTime && ex.endTime) {
+    try {
+      const storedOvernight =
+        Boolean(ex.allowOvernight) ||
+        Boolean(
+          ex.startDateTime &&
+            ex.endDateTime &&
+            new Date(ex.endDateTime).getTime() > new Date(ex.startDateTime).getTime() &&
+            formatIsoDateKolkata(new Date(ex.endDateTime)) > normalizeDateStr(ex.examDate)
+        );
+      const range = parseExamDateRange(ex.examDate, ex.startTime, ex.endTime, null, {
+        allowOvernight: storedOvernight,
+      });
+      startDateTime = range.startDateTime;
+      endDateTime = range.endDateTime;
+    } catch (e) {
+      console.warn('[StudentPortal] Could not parse stored examDate/startTime/endTime:', e.message);
+    }
+  }
+
+  if (!startDateTime && ex.examDate && ex.startTime) {
+    try {
+      startDateTime = parseKolkataDateTime(ex.examDate, ex.startTime);
+    } catch (e) {}
+  }
+  if (!startDateTime && ex.startDateTime) {
+    const parsed = new Date(ex.startDateTime);
+    if (!isNaN(parsed.getTime())) startDateTime = parsed;
+  }
+
+  if (!endDateTime && ex.examDate && ex.endTime) {
+    try {
+      endDateTime = parseKolkataDateTime(ex.examDate, ex.endTime);
+    } catch (e) {}
+  }
+  if (!endDateTime && ex.endDateTime) {
+    const parsed = new Date(ex.endDateTime);
+    if (!isNaN(parsed.getTime())) endDateTime = parsed;
+  }
+
+  if (!startDateTime || !endDateTime || isNaN(startDateTime.getTime()) || isNaN(endDateTime.getTime())) {
+    return {
+      startDateTime: null,
+      endDateTime: null,
+      studentAccessTime: null,
+      accessTimeFormatted: '',
+      accessDate: '',
+      windowCloseTime: null,
+      isInvalidSchedule: true,
+      isCompleted: false,
+      isPending: true,
+      isClosed: false,
+      isOpen: false,
+    };
+  }
+
+  const studentAccessTime = getStudentAccessTime(startDateTime);
+  const accessTimeFormatted = formatTime12h(studentAccessTime);
+  const accessDate = formatIsoDateKolkata(studentAccessTime);
+  const windowCloseTime = getSeatingWindowCloseTime(startDateTime, endDateTime);
+
+  const isCompleted =
+    ex.status === 'COMPLETED' || (endDateTime ? isExamConcluded(endDateTime, effectiveNow) : false);
+  const isClosed = isCompleted || hasSeatingWindowClosed(windowCloseTime, effectiveNow);
+  const isPending = !isClosed && effectiveNow < studentAccessTime;
+  const isOpen = !isClosed && !isPending;
+
+  return {
+    startDateTime,
+    endDateTime,
+    studentAccessTime,
+    accessTimeFormatted,
+    accessDate,
+    windowCloseTime,
+    isInvalidSchedule: false,
+    isCompleted,
+    isPending,
+    isClosed,
+    isOpen,
+  };
+}
+
+// @desc    Get list of examinations scheduled for TODAY (or opening tonight before midnight) in Asia/Kolkata
+// @route   GET /api/student/active-exams
+// @access  Public
+exports.getActiveExams = async (req, res) => {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({
+        success: false,
+        code: 'DATABASE_UNAVAILABLE',
+        message: 'Database service is temporarily unavailable while connecting to MongoDB Atlas. Please retry shortly.',
+      });
+    }
+
+    const effectiveNow = getEffectiveNow(req);
+
+    // Synchronize overdue transitions synchronously under simulated test clock; otherwise check lean docs first
+    if (req.headers['x-test-timestamp']) {
+      await publicationScheduler.completeOverdueExams(effectiveNow);
+    }
+
+    const { iso, dmy } = getTodayKolkataDate(req.query.date || effectiveNow);
+    const tomorrowIso = addDaysToIsoDate(iso, 1);
+    const [ty, tm, td] = tomorrowIso.split('-');
+    const tomorrowDmy = `${td}/${tm}/${ty}`;
+
+    // Query today's published, approved, non-cancelled/non-completed exams (plus midnight-boundary exams opening tonight)
+    const candidateExams = await Exam.find({
+      isDeleted: { $ne: true },
+      approvalStatus: 'APPROVED',
+      status: { $in: ['APPROVED', 'PUBLISHED', 'ONGOING', 'SCHEDULED'] },
+      visibilityStatus: { $nin: ['NOT_SCHEDULED', 'EXPIRED'] },
+      examDate: { $in: [iso, dmy, tomorrowIso, tomorrowDmy] },
+    })
+      .select(
+        'examName subjectName subjectCode examDate startTime endTime startDateTime endDateTime allowOvernight session department section sections group academicYear studentCount approvalStatus visibilityStatus status'
+      )
+      .sort({ startDateTime: 1, startTime: 1, session: 1, section: 1 })
+      .lean();
+
+    // Keep today's exams, plus tomorrow's early-morning exams ONLY if their 20-min early access opens today in IST
+    const todayExams = candidateExams.filter((ex) => {
+      const normExDate = normalizeDateStr(ex.examDate);
+      if (normExDate === iso) return true;
+      const win = resolveExamWindow(ex, effectiveNow);
+      return !win.isInvalidSchedule && win.accessDate === iso;
+    });
+
+    if (!todayExams || todayExams.length === 0) {
+      return res.status(200).json({
+        success: true,
+        count: 0,
+        todayDate: iso,
+        todayDisplayDate: dmy,
+        serverNow: effectiveNow.toISOString(),
+        message: 'No examinations scheduled for today.',
+        data: [],
+      });
+    }
+
+    // 3. Evaluate [start - 20m, start + 10m) seating access window for each examination
+    let hasOpenWindow = false;
+    let hasPendingWindow = false;
+    let allWindowsClosed = true;
+
+    const enrichedExams = todayExams.map((ex) => {
+      const {
+        startDateTime,
+        endDateTime,
+        studentAccessTime,
+        accessTimeFormatted,
+        accessDate,
+        windowCloseTime,
+        isInvalidSchedule,
+        isCompleted,
+        isClosed,
+        isPending,
+      } = resolveExamWindow(ex, effectiveNow);
+
+      let windowState = 'PENDING';
+      let notice = accessTimeFormatted
+        ? `Your examination seating information will become available at ${accessTimeFormatted} IST, 20 minutes before your examination starts.`
+        : 'Examination schedule is unavailable. Please contact the Exam Cell.';
+
+      if (isInvalidSchedule) {
+        windowState = 'INVALID';
+        notice = 'Examination schedule is missing or invalid. Please contact the Exam Cell.';
+      } else if (isCompleted) {
+        windowState = 'COMPLETED';
+        notice = 'Examination has concluded.';
+      } else if (isClosed) {
+        windowState = 'CLOSED';
+        notice = 'Seating visibility window has closed (ended 10 minutes after examination start).';
+      } else if (isPending) {
+        windowState = 'PENDING';
+        hasPendingWindow = true;
+        allWindowsClosed = false;
+      } else {
+        windowState = 'OPEN';
+        notice = `Seating access is open (available from ${accessTimeFormatted} IST until 10 minutes after examination start).`;
+        hasOpenWindow = true;
+        allWindowsClosed = false;
+      }
+
+      const rawObj = { ...ex };
+      try {
+        rawObj.startTime = formatTime12h(rawObj.startTime || startDateTime);
+      } catch {
+        rawObj.startTime = rawObj.startTime || '';
+      }
+      try {
+        rawObj.endTime = formatTime12h(rawObj.endTime || endDateTime);
+      } catch {
+        rawObj.endTime = rawObj.endTime || '';
+      }
+
+      let formattedTimeRange = '';
+      try {
+        formattedTimeRange = formatExamTimeRange(rawObj);
+      } catch {
+        formattedTimeRange = `${rawObj.startTime} – ${rawObj.endTime}`.trim();
+      }
+
+      return {
+        ...rawObj,
+        formattedTimeRange,
+        startDateTime,
+        endDateTime,
+        studentAccessTime,
+        accessTimeFormatted,
+        accessDate,
+        windowCloseTime,
+        windowState,
+        notice,
+      };
+    });
+
+    let overallMessage = '';
+    if (hasOpenWindow) {
+      overallMessage = 'Seating access is currently open for today’s examination.';
+    } else if (hasPendingWindow) {
+      overallMessage = 'Your examination seating information will become available 20 minutes before the examination starts.';
+    } else if (allWindowsClosed) {
+      overallMessage = 'Seating visibility windows for today’s examinations have closed.';
+    }
+
+    // Trigger non-blocking background sweep if any active exam just reached endDateTime during normal traffic
+    if (!req.headers['x-test-timestamp'] && allWindowsClosed && enrichedExams.some((e) => e.status !== 'COMPLETED')) {
+      void publicationScheduler.completeOverdueExams();
+    }
+
+    // Filter out completed and closed-window examinations so expired seating is hidden
+    const activeList = enrichedExams.filter((e) => e.windowState !== 'COMPLETED' && e.windowState !== 'CLOSED');
+
+    res.status(200).json({
+      success: true,
+      count: activeList.length,
+      totalTodayCount: enrichedExams.length,
+      todayDate: iso,
+      todayDisplayDate: dmy,
+      serverNow: effectiveNow.toISOString(),
+      message: activeList.length === 0 ? 'Seating visibility windows for today’s examinations have closed.' : overallMessage,
+      data: activeList,
+    });
+  } catch (error) {
+    if (isDbConnectivityError(error) || mongoose.connection.readyState !== 1) {
+      return res.status(503).json({
+        success: false,
+        code: 'DATABASE_UNAVAILABLE',
+        message: 'Database service is temporarily unavailable while reconnecting to MongoDB Atlas. Please retry shortly.',
+      });
+    }
+    console.error('[StudentPortal getActiveExams Error]', error.message);
+    res.status(500).json({
+      success: false,
+      code: 'SERVER_ERROR',
+      message: 'Unable to fetch today’s examination schedule. Please retry shortly.',
+    });
+  }
+};
+
+// @desc    Lookup student seating assignment with strict 20-minute early access window enforcement
+// @route   POST /api/student/lookup
+// @access  Public (Rate Limited)
+exports.lookupSeat = async (req, res) => {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({
+        success: false,
+        code: 'DATABASE_UNAVAILABLE',
+        message: 'Database service is temporarily unavailable while connecting to MongoDB Atlas. Please retry shortly.',
+      });
+    }
+
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const { registrationNumber, examId, date } = body;
+
+    // 1. Fail-fast input & format validation before querying MongoDB
+    if (!registrationNumber || typeof registrationNumber !== 'string' || !registrationNumber.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid Student Registration Number.',
+      });
+    }
+
+    const regNo = registrationNumber.trim().toUpperCase();
+
+    // Validate registration number format (10-character college roll number; allow 8-12 alphanumeric)
+    if (!/^[A-Z0-9]{8,12}$/i.test(regNo)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid registration number format. Please enter a valid 10-character candidate roll number.',
+      });
+    }
+
+    const effectiveNow = getEffectiveNow(req);
+    const hasTestClock = Boolean(req.headers['x-test-timestamp']);
+    if (hasTestClock) {
+      await publicationScheduler.completeOverdueExams(effectiveNow);
+    }
+
+    const { iso, dmy } = getTodayKolkataDate(date || effectiveNow);
+    const tomorrowIso = addDaysToIsoDate(iso, 1);
+    const [ty, tm, td] = tomorrowIso.split('-');
+    const tomorrowDmy = `${td}/${tm}/${ty}`;
+
+    // 2. Query student existence and matching examinations in parallel
+    const examQuery = {
+      isDeleted: { $ne: true },
+      approvalStatus: { $nin: ['CANCELLED', 'REJECTED', 'DRAFT'] },
+      status: { $nin: ['CANCELLED', 'FAILED', 'DRAFT'] },
+      examDate: { $in: [iso, dmy, tomorrowIso, tomorrowDmy] },
+    };
+
+    if (examId) {
+      examQuery._id = examId;
+    }
+
+    const baseExamFields =
+      'examName subjectName subjectCode examDate startTime endTime startDateTime endDateTime allowOvernight session department section group academicYear facultyName status approvalStatus visibilityStatus sectionAllocations.section sectionAllocations.group sectionAllocations.roomNumber sectionAllocations.classroomName sectionAllocations.facultyName';
+
+    const initialQueries = [
+      Exam.find(examQuery).select(baseExamFields).lean(),
+    ];
+
+    if (examId) {
+      initialQueries.push(
+        Allocation.findOne({
+          examId,
+          isCurrent: true,
+          status: { $ne: 'DRAFT' },
+          'students.registrationNumber': regNo,
+        })
+          .select({ section: 1, group: 1, status: 1, 'students.$': 1 })
+          .lean()
+      );
+    }
+
+    const [candidateExams, preloadedAllocation] = await Promise.all(initialQueries);
+
+    const todayExams = candidateExams.filter((ex) => {
+      if (examId && ex._id.toString() === examId.toString()) return true;
+      if (normalizeDateStr(ex.examDate) === iso) return true;
+      const win = resolveExamWindow(ex, effectiveNow);
+      return !win.isInvalidSchedule && win.accessDate === iso;
+    });
+
+    if (!todayExams || todayExams.length === 0) {
+      const [studentExists, hasEnrollment] = await Promise.all([
+        Student.exists({ registrationNumber: regNo }),
+        StudentEnrollment.exists({ rollNumber: regNo }),
+      ]);
+      if (!studentExists && !hasEnrollment) {
+        return res.status(404).json({
+          success: false,
+          message: `Candidate with Registration Number "${regNo}" was not found in permanent student records. Please check your roll number or contact the Exam Cell.`,
+        });
+      }
+      return res.status(404).json({
+        success: false,
+        message: 'No examinations scheduled for today.',
+      });
+    }
+
+    // 3. Identify target examination for this student (prioritizing APPROVED OPEN -> PENDING -> COMPLETED)
+    const windowRank = (ex) => {
+      if (ex.approvalStatus !== 'APPROVED') return 3;
+      const win = resolveExamWindow(ex, effectiveNow);
+      if (win.isOpen) return 0;
+      if (win.isPending) return 1;
+      return 2; // completed / invalid
+    };
+
+    let targetExam = null;
+    let preMatchedAlloc = preloadedAllocation || null;
+
+    if (examId) {
+      targetExam = todayExams.find((e) => e._id.toString() === examId.toString());
+    } else if (todayExams.length === 1) {
+      targetExam = todayExams[0];
+    } else {
+      const todayIds = todayExams.map((ex) => ex._id);
+      const matchingAllocs = await Allocation.find({
+        examId: { $in: todayIds },
+        isCurrent: true,
+        status: { $ne: 'DRAFT' },
+        'students.registrationNumber': regNo,
+      })
+        .select({ examId: 1, section: 1, group: 1, status: 1, 'students.$': 1 })
+        .lean();
+
+      const allocByExamId = new Map(matchingAllocs.map((a) => [String(a.examId), a]));
+      const enrolledExams = todayExams.filter((ex) => allocByExamId.has(String(ex._id)));
+      const candidates = enrolledExams.length > 0 ? enrolledExams : todayExams;
+      candidates.sort((a, b) => windowRank(a) - windowRank(b));
+      targetExam = candidates[0];
+      preMatchedAlloc = targetExam ? allocByExamId.get(String(targetExam._id)) || null : null;
+    }
+
+    if (!targetExam) {
+      return res.status(404).json({
+        success: false,
+        message: 'No matching examination found for today.',
+      });
+    }
+
+    // Reject unpublished / unapproved examinations cleanly before exposing any seat data
+    if (
+      targetExam.approvalStatus !== 'APPROVED' ||
+      (targetExam.visibilityStatus === 'NOT_SCHEDULED' && targetExam.status !== 'PUBLISHED' && targetExam.status !== 'ONGOING')
+    ) {
+      return res.status(403).json({
+        success: false,
+        isNotPublished: true,
+        serverNow: effectiveNow.toISOString(),
+        message: 'Seating information for this examination has not been published yet. Please check back after Exam Cell approval.',
+      });
+    }
+
+    // 4. Compute [start - 20m, start + 10m) seating access window in Asia/Kolkata timezone
+    const {
+      startDateTime,
+      endDateTime,
+      studentAccessTime,
+      accessTimeFormatted,
+      accessDate,
+      windowCloseTime,
+      isInvalidSchedule,
+      isCompleted,
+      isClosed,
+      isPending,
+    } = resolveExamWindow(targetExam, effectiveNow);
+
+    // RULE 0: Missing or malformed schedule must never leak seat access
+    if (isInvalidSchedule) {
+      return res.status(400).json({
+        success: false,
+        isInvalidSchedule: true,
+        serverNow: effectiveNow.toISOString(),
+        message: 'Examination schedule is missing or invalid. Please contact the Exam Cell.',
+      });
+    }
+
+    // RULE 1: Window Closed (>= start + 10 minutes) or Examination Concluded -> Hidden
+    if (isClosed || isCompleted) {
+      if (!hasTestClock && isCompleted && targetExam.status !== 'COMPLETED') {
+        void publicationScheduler.completeOverdueExams();
+      }
+      return res.status(403).json({
+        success: false,
+        isWindowClosed: true,
+        isCompleted,
+        serverNow: effectiveNow.toISOString(),
+        message: 'Seating information is no longer available. The examination seating access window has closed.',
+      });
+    }
+
+    // RULE 2: Before 20-Minute Early Access Timestamp (studentAccessTime = startDateTime - 20m) -> Strictly Locked
+    if (isPending) {
+      return res.status(403).json({
+        success: false,
+        isPending: true,
+        serverNow: effectiveNow.toISOString(),
+        message: `Your examination seating information will become available at ${accessTimeFormatted} IST, 20 minutes before your examination starts.`,
+        studentAccessTime: studentAccessTime.toISOString(),
+        accessTimeFormatted,
+        accessDate,
+        startTime: formatTime12h(targetExam.startTime || startDateTime),
+        endTime: formatTime12h(targetExam.endTime || endDateTime),
+        startDateTime,
+        endDateTime,
+        windowCloseTime,
+      });
+    }
+
+    // RULE 3: Inside [studentAccessTime, endDateTime) -> Permit Seat Lookup!
+    let studentMatch = null;
+    let studentSection = 'A1';
+    let assignedFaculty = targetExam.facultyName || 'Department Faculty';
+    let roomNumber = '3010';
+    let classroomName = 'ET BLOCK 3010';
+    let inferredGroup = targetExam.group || 'Group A';
+
+    // Use preloaded positional $ Allocation doc when available, otherwise fetch positional $ only
+    const allocation =
+      preMatchedAlloc ||
+      (await Allocation.findOne({
+        examId: targetExam._id,
+        isCurrent: true,
+        status: { $ne: 'DRAFT' },
+        'students.registrationNumber': regNo,
+      })
+        .select({ section: 1, group: 1, status: 1, 'students.$': 1 })
+        .lean());
+
+    if (allocation) {
+      studentMatch = allocation.students?.[0] || null;
+      if (studentMatch) {
+        studentSection = studentMatch.section || allocation.section || 'A1';
+        const secAlloc = (targetExam.sectionAllocations || []).find((sa) => sa.section === studentSection);
+        roomNumber = secAlloc?.roomNumber || studentMatch.roomNumber || classroomMappingService.getRoomNumberForSection(studentSection) || '3010';
+        classroomName = secAlloc?.classroomName || studentMatch.classroomName || `ET BLOCK ${roomNumber}`;
+        assignedFaculty = secAlloc?.facultyName || studentMatch.facultyName || targetExam.facultyName || 'Department Faculty';
+        inferredGroup = studentMatch.group || secAlloc?.group || allocation.group || (['A1', 'A2', 'A3'].includes(studentSection) ? 'Group A' : 'Group B');
+      }
+    }
+
+    // Fallback: Check parent exam sectionAllocations snapshot directly only if Allocation didn't match
+    if (!studentMatch) {
+      const fullExamRoster = await Exam.findById(targetExam._id)
+        .select('facultyName sectionAllocations.section sectionAllocations.group sectionAllocations.roomNumber sectionAllocations.classroomName sectionAllocations.facultyName sectionAllocations.rosterSnapshot')
+        .lean();
+      for (const sa of fullExamRoster?.sectionAllocations || []) {
+        const found = (sa.rosterSnapshot || []).find(
+          (s) => String(s.registrationNumber || '').trim().toUpperCase() === regNo
+        );
+        if (found) {
+          studentMatch = found;
+          studentSection = found.section || sa.section || 'A1';
+          roomNumber = sa.roomNumber || classroomMappingService.getRoomNumberForSection(studentSection) || '3010';
+          classroomName = sa.classroomName || `ET BLOCK ${roomNumber}`;
+          assignedFaculty = sa.facultyName || fullExamRoster.facultyName || targetExam.facultyName || 'Department Faculty';
+          inferredGroup = found.group || sa.group || (['A1', 'A2', 'A3'].includes(studentSection) ? 'Group A' : 'Group B');
+          break;
+        }
+      }
+    }
+
+    if (!studentMatch) {
+      const [studentExists, hasEnrollment] = await Promise.all([
+        Student.exists({ registrationNumber: regNo }),
+        StudentEnrollment.exists({ rollNumber: regNo }),
+      ]);
+      if (!studentExists && !hasEnrollment) {
+        return res.status(404).json({
+          success: false,
+          message: `Candidate with Registration Number "${regNo}" was not found in permanent student records. Please check your roll number or contact the Exam Cell.`,
+        });
+      }
+      return res.status(404).json({
+        success: false,
+        message: `No published seating record found for registration number "${regNo}" in ${targetExam.subjectName} (${targetExam.examDate}). Please contact the Exam Cell.`,
+      });
+    }
+
+    // Return verified seating details during the active [studentAccessTime, endDateTime) window
+    res.status(200).json({
+      success: true,
+      data: {
+        studentName: studentMatch.name,
+        registrationNumber: studentMatch.registrationNumber,
+        examination: `${targetExam.subjectName} (${targetExam.subjectCode})`,
+        subject: `${targetExam.subjectName} (${targetExam.subjectCode})`,
+        subjectName: targetExam.subjectName,
+        subjectCode: targetExam.subjectCode,
+        examName: targetExam.examName,
+        academicYear: targetExam.academicYear || '2026-2027',
+        semester: targetExam.semester || 'I Semester',
+        group: inferredGroup,
+        section: studentSection,
+        faculty: assignedFaculty,
+        facultyName: assignedFaculty,
+        examinationDate: targetExam.examDate,
+        examDate: targetExam.examDate,
+        examinationTime: targetExam.startTime ? formatExamTimeRange(targetExam) : targetExam.session,
+        startTime: formatTime12h(targetExam.startTime || startDateTime),
+        endTime: formatTime12h(targetExam.endTime || endDateTime),
+        session: targetExam.session || (targetExam.startTime?.toUpperCase().includes('PM') ? 'AN' : 'FN'),
+        questionPaperSet: studentMatch.questionPaperSet || 'A',
+        classroom: `${classroomName} (${roomNumber})`,
+        classroomName: classroomName,
+        classroomHall: classroomName,
+        roomNumber: roomNumber,
+        block: 'ET BLOCK',
+        floor: '3rd Floor',
+        row: `Row ${studentMatch.rowNumber || 1}`,
+        rowNumber: studentMatch.rowNumber || 1,
+        bench: `Bench ${studentMatch.benchNumber || 1}`,
+        benchNumber: studentMatch.benchNumber || 1,
+        chairNumber: studentMatch.seatNumber || 1,
+        seatNumber: studentMatch.seatNumber || 1,
+        seatId: studentMatch.seatId || `R${studentMatch.rowNumber || 1}-B${studentMatch.benchNumber || 1}-S${studentMatch.seatNumber || 1}`,
+        studentAccessTime: studentAccessTime.toISOString(),
+        accessTimeFormatted,
+        windowCloseTime: windowCloseTime ? windowCloseTime.toISOString() : null,
+        serverNow: effectiveNow.toISOString(),
+      },
+    });
+  } catch (error) {
+    if (isDbConnectivityError(error) || mongoose.connection.readyState !== 1) {
+      return res.status(503).json({
+        success: false,
+        code: 'DATABASE_UNAVAILABLE',
+        message: 'Database service is temporarily unavailable while reconnecting to MongoDB Atlas. Please retry shortly.',
+      });
+    }
+    console.error('[StudentPortal lookupSeat Error]', error.message);
+    res.status(500).json({
+      success: false,
+      code: 'SERVER_ERROR',
+      message: 'Unable to complete seating lookup right now. Please try again.',
+    });
+  }
+};
