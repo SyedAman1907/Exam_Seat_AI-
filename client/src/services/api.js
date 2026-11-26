@@ -1,11 +1,25 @@
 import axios from 'axios';
 
-const rawApiUrl = String(import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '');
-const API_BASE_URL = !rawApiUrl
-  ? '/api'
-  : rawApiUrl.startsWith('http') && !rawApiUrl.endsWith('/api')
-    ? `${rawApiUrl}/api`
-    : rawApiUrl;
+const PRODUCTION_BACKEND_URL = 'https://exam-seat-ai-1.onrender.com';
+
+function resolveApiBaseUrl() {
+  const raw = String(import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '');
+  const isLocalhostUrl = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(raw);
+
+  if (import.meta.env.PROD) {
+    if (!raw || raw === '/api' || isLocalhostUrl) {
+      return `${PRODUCTION_BACKEND_URL}/api`;
+    }
+    return raw.startsWith('http') && !raw.endsWith('/api') ? `${raw}/api` : raw;
+  }
+
+  if (!raw) {
+    return '/api';
+  }
+  return raw.startsWith('http') && !raw.endsWith('/api') ? `${raw}/api` : raw;
+}
+
+const API_BASE_URL = resolveApiBaseUrl();
 
 export const API_TIMEOUTS = {
   DEFAULT: 30000,

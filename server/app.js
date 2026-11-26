@@ -26,14 +26,28 @@ const app = express();
 // Trust Render / reverse-proxy headers (required by express-rate-limit v7 in production)
 app.set('trust proxy', 1);
 
-const normalizeOrigin = (value) => String(value || '').trim().replace(/\/+$/, '');
+const normalizeOrigin = (value) => {
+  const trimmed = String(value || '').trim().replace(/\/+$/, '');
+  if (!trimmed || trimmed === '*') return '';
+  try {
+    const parsed = new URL(trimmed);
+    return `${parsed.protocol.toLowerCase()}//${parsed.host.toLowerCase()}`;
+  } catch {
+    return '';
+  }
+};
+
 const normalizeVercelHostOrigin = (host) => {
   const cleaned = String(host || '').trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
-  return cleaned ? `https://${cleaned}` : '';
+  return cleaned ? normalizeOrigin(`https://${cleaned}`) : '';
 };
+
 const envOrigins = [
   process.env.CLIENT_URL,
+  process.env.FRONTEND_URL,
+  process.env.CORS_ORIGIN,
   process.env.CORS_ORIGINS,
+  process.env.ALLOWED_ORIGINS,
   process.env.RENDER_EXTERNAL_URL,
   normalizeVercelHostOrigin(process.env.VERCEL_URL),
   normalizeVercelHostOrigin(process.env.VERCEL_BRANCH_URL),
@@ -44,46 +58,54 @@ const envOrigins = [
   .map(normalizeOrigin)
   .filter(Boolean);
 
-// Middleware
-const allowedOrigins = [
+const DEFAULT_ALLOWED_ORIGINS = [
+  'https://exam-seat-ai-eta.vercel.app',
   'http://localhost:5173',
+  'http://localhost:5174',
   'http://127.0.0.1:5173',
+  'http://127.0.0.1:5174',
   'http://localhost:4173',
   'http://127.0.0.1:4173',
   'http://localhost:3000',
   'http://127.0.0.1:3000',
-  ...envOrigins,
 ];
 
-app.use(cors((req, callback) => {
+const allowedOriginSet = new Set([
+  ...DEFAULT_ALLOWED_ORIGINS.map(normalizeOrigin).filter(Boolean),
+  ...envOrigins,
+]);
+
+const corsMiddleware = cors((req, callback) => {
   const origin = req.header('Origin');
   if (!origin) {
-    return callback(null, { origin: true, credentials: true });
+    // Allow non-browser / same-origin requests without an Origin header
+    return callback(null, { origin: false });
   }
+
   const normalized = normalizeOrigin(origin);
   const rawHost = req.get('x-forwarded-host') || req.get('host') || '';
-  const host = rawHost.split(',')[0].trim();
-  const isSameHost = host && (normalized === `https://${host}` || normalized === `http://${host}`);
+  const host = rawHost.split(',')[0].trim().toLowerCase();
+  const isSameHost = Boolean(host && (normalized === `https://${host}` || normalized === `http://${host}`));
 
-  if (
-    isSameHost ||
-    allowedOrigins.includes(normalized) ||
-    normalized.startsWith('http://localhost:') ||
-    normalized.startsWith('http://127.0.0.1:')
-  ) {
+  if (normalized && (isSameHost || allowedOriginSet.has(normalized))) {
     return callback(null, {
-      origin: true,
-      credentials: true,
-      methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+      origin: normalized,
+      credentials: false,
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
       allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Cache-Control', 'Pragma'],
       exposedHeaders: ['Content-Disposition', 'Content-Type', 'Content-Length'],
+      optionsSuccessStatus: 204,
     });
   }
 
   const corsErr = new Error(`CORS origin '${origin}' not allowed.`);
   corsErr.statusCode = 403;
   return callback(corsErr);
-}));
+});
+
+// Register CORS and preflight handling before all routes, auth middleware, and error handlers
+app.use(corsMiddleware);
+app.options('*', corsMiddleware);
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
