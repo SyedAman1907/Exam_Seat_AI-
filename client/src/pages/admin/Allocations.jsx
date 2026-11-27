@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useDeferredValue, useRef, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { useAuth } from '../../context/AuthContext';
 import api, { API_TIMEOUTS, formatApiError } from '../../services/api';
 import { downloadProtectedReport } from '../../utils/fileDownloader';
 import { formatExamTimeRange, formatSessionLabel } from '../../utils/dateTime';
@@ -57,7 +58,10 @@ const AllocationStudentRow = React.memo(({ s, indexOffset, idx, fallbackSubjectC
 ));
 
 const Allocations = () => {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
   const [searchParams, setSearchParams] = useSearchParams();
+  const actionLockRef = useRef(false);
   const examIdParam = searchParams.get('examId');
 
   const [exams, setExams] = useState([]);
@@ -159,15 +163,16 @@ const Allocations = () => {
 
   // Actions
   const handleGenerate = async () => {
-    if (actionLoading) return;
+    if (actionLockRef.current || actionLoading) return;
     if (!selectedExamId) {
       setMessage({ type: 'error', text: 'Please select an examination first.' });
       return;
     }
+    actionLockRef.current = true;
     try {
       setActionLoading('generate');
       setMessage({ type: '', text: '' });
-      const res = await api.post(`/exams/${selectedExamId}/allocate`, null, {
+      const res = await api.post(`/exams/${selectedExamId}/allocate`, {}, {
         timeout: API_TIMEOUTS.HEAVY_WRITE,
       });
       if (res.data.success) {
@@ -190,19 +195,21 @@ const Allocations = () => {
         text: formatApiError(err, 'Failed to generate seating allocation.'),
       });
     } finally {
+      actionLockRef.current = false;
       setActionLoading('');
     }
   };
 
   const handleVerify = async () => {
-    if (actionLoading) return;
+    if (actionLockRef.current || actionLoading) return;
     if (!selectedExamId) {
       setMessage({ type: 'error', text: 'Please select an examination first.' });
       return;
     }
+    actionLockRef.current = true;
     try {
       setActionLoading('verify');
-      const res = await api.post(`/exams/${selectedExamId}/verify`, null, {
+      const res = await api.post(`/exams/${selectedExamId}/verify`, {}, {
         timeout: API_TIMEOUTS.HEAVY_WRITE,
       });
       if (res.data.success) {
@@ -215,19 +222,21 @@ const Allocations = () => {
     } catch (err) {
       setMessage({ type: 'error', text: formatApiError(err, 'Verification failed.') });
     } finally {
+      actionLockRef.current = false;
       setActionLoading('');
     }
   };
 
   const handleLock = async () => {
-    if (actionLoading) return;
+    if (actionLockRef.current || actionLoading) return;
     if (!selectedExamId) {
       setMessage({ type: 'error', text: 'Please select an examination first.' });
       return;
     }
+    actionLockRef.current = true;
     try {
       setActionLoading('lock');
-      const res = await api.post(`/exams/${selectedExamId}/lock`, null, {
+      const res = await api.post(`/exams/${selectedExamId}/lock`, {}, {
         timeout: API_TIMEOUTS.HEAVY_WRITE,
       });
       if (res.data.success) {
@@ -240,31 +249,43 @@ const Allocations = () => {
     } catch (err) {
       setMessage({ type: 'error', text: formatApiError(err, 'Failed to lock allocation.') });
     } finally {
+      actionLockRef.current = false;
       setActionLoading('');
     }
   };
 
   const handlePublish = async () => {
-    if (actionLoading) return;
+    if (actionLockRef.current || actionLoading) return;
+    if (!isAdmin) {
+      setMessage({
+        type: 'error',
+        text: 'Only an Administrator is authorized to approve and publish examinations.',
+      });
+      return;
+    }
     if (!selectedExamId) {
       setMessage({ type: 'error', text: 'Please select an examination first.' });
       return;
     }
+    actionLockRef.current = true;
     try {
       setActionLoading('publish');
-      const res = await api.post(`/exams/${selectedExamId}/publish`, null, {
+      const res = await api.post(`/exams/${selectedExamId}/publish`, {}, {
         timeout: API_TIMEOUTS.HEAVY_WRITE,
       });
       if (res.data.success) {
-        setAllocation(res.data.data);
+        setAllocation(res.data.allocation || res.data.data);
         setMessage({
           type: 'success',
-          text: `Allocation PUBLISHED! Students can now view their seat assignments 20 minutes before exam start.`,
+          text:
+            res.data.message ||
+            'Allocation PUBLISHED! Students can now view their seat assignments 20 minutes before exam start.',
         });
       }
     } catch (err) {
       setMessage({ type: 'error', text: formatApiError(err, 'Failed to publish allocation.') });
     } finally {
+      actionLockRef.current = false;
       setActionLoading('');
     }
   };
@@ -587,15 +608,21 @@ const Allocations = () => {
 
               {allocation.status === 'LOCKED' && (
                 <>
-                  <button
-                    type="button"
-                    onClick={handlePublish}
-                    disabled={Boolean(actionLoading)}
-                    className="inline-flex items-center px-3.5 py-1.5 text-xs font-semibold rounded-lg text-white bg-emerald-600 hover:bg-emerald-700 shadow-sm disabled:opacity-50 transition-colors cursor-pointer"
-                  >
-                    <Globe size={13} className="mr-1.5" />
-                    {actionLoading === 'publish' ? 'Publishing...' : 'Publish to Student Portal'}
-                  </button>
+                  {isAdmin ? (
+                    <button
+                      type="button"
+                      onClick={handlePublish}
+                      disabled={Boolean(actionLoading)}
+                      className="inline-flex items-center px-3.5 py-1.5 text-xs font-semibold rounded-lg text-white bg-emerald-600 hover:bg-emerald-700 shadow-sm disabled:opacity-50 transition-colors cursor-pointer"
+                    >
+                      <Globe size={13} className="mr-1.5" />
+                      {actionLoading === 'publish' ? 'Publishing...' : 'Publish to Student Portal'}
+                    </button>
+                  ) : (
+                    <span className="inline-flex items-center px-3 py-1.5 text-xs font-semibold rounded-lg text-amber-800 bg-amber-50 border border-amber-200">
+                      Awaiting Admin Publish Approval
+                    </span>
+                  )}
                   <button
                     type="button"
                     onClick={handleUnlock}

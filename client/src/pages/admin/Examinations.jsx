@@ -176,9 +176,12 @@ const Examinations = () => {
   const [correctionReason, setCorrectionReason] = useState('');
   const [availabilityCheck, setAvailabilityCheck] = useState({
     loading: false,
-    available: true,
+    available: null,
     conflicts: [],
+    timeError: '',
+    availabilityError: '',
   });
+  const [availabilityRetryNonce, setAvailabilityRetryNonce] = useState(0);
 
   // Delete, Cancel, Approve & Reject Confirmation Modals
   const [actionError, setActionError] = useState('');
@@ -189,6 +192,7 @@ const Examinations = () => {
   const [cancelReason, setCancelReason] = useState('');
   const [cancelling, setCancelling] = useState(false);
   const [publishModalExam, setPublishModalExam] = useState(null);
+  const [publishModalError, setPublishModalError] = useState('');
   const [publishing, setPublishing] = useState(false);
   const [rejectModalExam, setRejectModalExam] = useState(null);
   const [rejectReason, setRejectReason] = useState('Needs correction in seating or mappings.');
@@ -197,10 +201,13 @@ const Examinations = () => {
   const resolveAbortRef = useRef(null);
   const resolveSeqRef = useRef(0);
   const availAbortRef = useRef(null);
+  const availSeqRef = useRef(0);
+  const lastAvailRequestKeyRef = useRef('');
   const fetchExamsAbortRef = useRef(null);
   const fetchExamsSeqRef = useRef(0);
   const skipNextTabEffectRef = useRef(false);
   const submitLockRef = useRef(false);
+  const publishLockRef = useRef(false);
   const lastCreatedExamRef = useRef({ signature: '', examId: '', createdAt: 0 });
   const deleteLockRef = useRef(false);
   const titleManuallyEditedRef = useRef(false);
@@ -284,6 +291,7 @@ const Examinations = () => {
   // Live Classroom Conflict Detection in Create / Edit Modal
   useEffect(() => {
     if (!showCreateModal || !formData.examDate || !formData.startTime || !formData.endTime) {
+      lastAvailRequestKeyRef.current = '';
       return;
     }
     const timeCheck = validateExamTimeRange(formData.startTime, formData.endTime, {
@@ -291,7 +299,36 @@ const Examinations = () => {
       allowOvernight: formData.allowOvernight,
     });
     if (!timeCheck.valid) {
-      setAvailabilityCheck({ loading: false, available: false, conflicts: [], timeError: timeCheck.message });
+      lastAvailRequestKeyRef.current = '';
+      setAvailabilityCheck({
+        loading: false,
+        available: false,
+        conflicts: [],
+        timeError: timeCheck.message,
+        availabilityError: '',
+      });
+      return;
+    }
+
+    const activeSecs = resolvedMappings
+      .filter((m) => selectedSections.includes(m.section))
+      .map((m) => m.section);
+    const effectiveSections = activeSecs.length > 0 ? activeSecs : selectedSections;
+
+    const requestKey = JSON.stringify({
+      examDate: formData.examDate,
+      startTime: formData.startTime,
+      endTime: formData.endTime,
+      session: formData.session,
+      group: formData.group,
+      allowOvernight: Boolean(formData.allowOvernight),
+      selectedSections: effectiveSections,
+      classroomOverrides,
+      excludeExamId: editingExam?._id || null,
+      retry: availabilityRetryNonce,
+    });
+
+    if (requestKey === lastAvailRequestKeyRef.current) {
       return;
     }
 
@@ -301,46 +338,70 @@ const Examinations = () => {
       }
       const controller = new AbortController();
       availAbortRef.current = controller;
+      const seq = ++availSeqRef.current;
 
       try {
-        setAvailabilityCheck((prev) => ({ ...prev, loading: true, timeError: '' }));
-        const activeSecs = resolvedMappings
-          .filter((m) => selectedSections.includes(m.section))
-          .map((m) => m.section);
+        setAvailabilityCheck((prev) => ({
+          ...prev,
+          loading: true,
+          timeError: '',
+          availabilityError: '',
+        }));
 
-        const res = await api.post(
-          '/exams/check-availability',
-          {
+        const res = await api.get('/exams/check-availability', {
+          params: {
             examDate: formData.examDate,
             startTime: formData.startTime,
             endTime: formData.endTime,
             session: formData.session,
             group: formData.group,
             allowOvernight: Boolean(formData.allowOvernight),
-            selectedSections: activeSecs.length > 0 ? activeSecs : selectedSections,
-            classroomOverrides,
-            excludeExamId: editingExam?._id || null,
+            selectedSections: effectiveSections.join(','),
+            classroomOverrides: JSON.stringify(classroomOverrides || {}),
+            ...(editingExam?._id ? { excludeExamId: editingExam._id } : {}),
           },
-          { signal: controller.signal }
-        );
+          signal: controller.signal,
+          timeout: 15000,
+          maxRetries: 1,
+        });
+        if (seq !== availSeqRef.current) return;
+
         if (res.data?.success) {
+          lastAvailRequestKeyRef.current = requestKey;
           setAvailabilityCheck({
             loading: false,
-            available: res.data.available,
+            available: Boolean(res.data.available),
             conflicts: res.data.conflicts || [],
             timeError: '',
+            availabilityError: '',
+          });
+        } else {
+          lastAvailRequestKeyRef.current = '';
+          setAvailabilityCheck({
+            loading: false,
+            available: null,
+            conflicts: [],
+            timeError: '',
+            availabilityError: res.data?.message || 'Unable to verify classroom availability.',
           });
         }
       } catch (e) {
         if (e.name === 'CanceledError' || e.code === 'ERR_CANCELED') return;
+        if (seq !== availSeqRef.current) return;
+        lastAvailRequestKeyRef.current = '';
         console.warn('[Examinations] Live availability check error:', e?.message || e);
-        setAvailabilityCheck((prev) => ({
-          ...prev,
+        setAvailabilityCheck({
           loading: false,
-          availabilityError: e.response?.data?.message || '',
-        }));
+          available: null,
+          conflicts: [],
+          timeError: '',
+          availabilityError: formatApiError(
+            e,
+            'Live availability check could not reach the server. Your exam list is unaffected.'
+          ),
+        });
       }
-    }, 250);
+    }, 350);
 
     return () => {
       clearTimeout(timer);
@@ -360,6 +421,7 @@ const Examinations = () => {
     resolvedMappings,
     classroomOverrides,
     editingExam,
+    availabilityRetryNonce,
   ]);
 
   // Trigger Automatic Faculty & Student Mapping Resolution when subject, year, semester, or group changes
@@ -887,22 +949,51 @@ const Examinations = () => {
   };
 
   const confirmPublishExam = async () => {
-    if (!publishModalExam) return;
+    if (!publishModalExam || publishLockRef.current || publishing) return;
+    if (!isAdmin) {
+      const msg = 'Only an Administrator is authorized to approve and publish examinations.';
+      setPublishModalError(msg);
+      setActionError(msg);
+      return;
+    }
+
+    const targetExam = publishModalExam;
+    publishLockRef.current = true;
+    let publishedOk = false;
+
     try {
       setPublishing(true);
       setActionError('');
-      const res = await api.post(`/exams/${publishModalExam._id}/publish`, null, {
+      setPublishModalError('');
+      const res = await api.post(`/exams/${targetExam._id}/publish`, {}, {
         timeout: API_TIMEOUTS.HEAVY_WRITE,
       });
       if (res.data?.success) {
+        publishedOk = true;
+        const updatedExam = res.data.data;
+        if (updatedExam?._id) {
+          setExams((prev) =>
+            prev.map((ex) => (String(ex._id) === String(updatedExam._id) ? updatedExam : ex))
+          );
+        }
+        if (targetExam.approvalStatus === 'PENDING_REVIEW') {
+          setPendingReviewCount((prev) => Math.max(0, prev - 1));
+        }
         setSuccessBanner(res.data.message || 'Examination approved and scheduled for publication.');
         setPublishModalExam(null);
-        await fetchExams();
+        setPublishModalError('');
       }
     } catch (err) {
-      setActionError(formatApiError(err, 'Failed to publish examination.'));
+      const msg = formatApiError(err, 'Failed to publish examination.');
+      setPublishModalError(msg);
+      setActionError(msg);
     } finally {
+      publishLockRef.current = false;
       setPublishing(false);
+    }
+
+    if (publishedOk) {
+      await fetchExams(null, { preserveOnFailure: true, background: true });
     }
   };
 
@@ -1507,7 +1598,10 @@ const Examinations = () => {
                         <>
                           <button
                             type="button"
-                            onClick={() => setPublishModalExam(exam)}
+                            onClick={() => {
+                              setPublishModalError('');
+                              setPublishModalExam(exam);
+                            }}
                             title="Admin: Approve Examination"
                             className="inline-flex items-center px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 text-xs font-bold shadow-xs cursor-pointer"
                           >
@@ -2123,7 +2217,25 @@ const Examinations = () => {
                   <div className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-[11px] text-slate-500">
                     Checking real-time classroom booking overlaps...
                   </div>
-                ) : !availabilityCheck.available && availabilityCheck.conflicts?.length > 0 ? (
+                ) : availabilityCheck.availabilityError ? (
+                  <div className="px-3 py-2 bg-amber-50 border border-amber-300 rounded-lg text-[11px] text-amber-900 flex items-center justify-between gap-2">
+                    <div className="flex items-center space-x-2">
+                      <AlertTriangle size={14} className="text-amber-600 flex-shrink-0" />
+                      <span>{availabilityCheck.availabilityError} Conflict validation will still run on save.</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        lastAvailRequestKeyRef.current = '';
+                        setAvailabilityRetryNonce((n) => n + 1);
+                      }}
+                      className="inline-flex items-center px-2.5 py-1 rounded bg-white border border-amber-300 text-amber-900 font-bold hover:bg-amber-100 flex-shrink-0 cursor-pointer"
+                    >
+                      <RotateCcw size={11} className="mr-1" />
+                      Retry Check
+                    </button>
+                  </div>
+                ) : availabilityCheck.available === false && availabilityCheck.conflicts?.length > 0 ? (
                   <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-[11px] text-red-800 space-y-1">
                     <div className="font-bold flex items-center space-x-1.5 text-red-700">
                       <AlertTriangle size={14} />
@@ -2135,12 +2247,12 @@ const Examinations = () => {
                       </div>
                     ))}
                   </div>
-                ) : (
+                ) : availabilityCheck.available === true ? (
                   <div className="px-3 py-2 bg-emerald-50/70 border border-emerald-200 rounded-lg text-[11px] text-emerald-800 font-medium flex items-center space-x-1.5">
                     <CheckCircle2 size={14} className="text-emerald-600 flex-shrink-0" />
-                    <span>No classroom time conflicts detected for selected rooms & time slot.</span>
+                    <span>No classroom time conflicts detected for selected rooms &amp; time slot.</span>
                   </div>
-                )}
+                ) : null}
 
                 {/* Step 2b: Target Examination Group Session (Group A, Group B, or Both Groups) */}
                 <div className="pt-2 border-t border-slate-200">
@@ -2690,7 +2802,12 @@ const Examinations = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div
             className="fixed inset-0 bg-navy-900/50 backdrop-blur-xs"
-            onClick={() => !publishing && setPublishModalExam(null)}
+            onClick={() => {
+              if (!publishing) {
+                setPublishModalError('');
+                setPublishModalExam(null);
+              }
+            }}
           />
           <div className="relative bg-white rounded-2xl shadow-2xl border border-emerald-200 max-w-md w-full p-5 space-y-4">
             <div className="flex items-start space-x-3">
@@ -2704,18 +2821,27 @@ const Examinations = () => {
                 </p>
               </div>
             </div>
+            {publishModalError && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 flex items-start space-x-2">
+                <AlertCircle size={15} className="text-red-600 flex-shrink-0 mt-0.5" />
+                <span className="font-medium">{publishModalError}</span>
+              </div>
+            )}
             <div className="flex items-center justify-end space-x-2 pt-2 border-t border-slate-100">
               <button
                 type="button"
                 disabled={publishing}
-                onClick={() => setPublishModalExam(null)}
+                onClick={() => {
+                  setPublishModalError('');
+                  setPublishModalExam(null);
+                }}
                 className="px-4 py-2 rounded-lg text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
-                disabled={publishing}
+                disabled={publishing || !isAdmin}
                 onClick={confirmPublishExam}
                 className="px-4 py-2 rounded-lg text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 cursor-pointer"
               >

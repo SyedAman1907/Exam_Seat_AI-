@@ -463,7 +463,7 @@ const FacultyAssignments = () => {
       setRetryingJob(true);
       setPreviewError('');
       setRefreshWarning('');
-      const res = await api.post(`/mappings/jobs/${activeJob.jobId}/retry`, null, {
+      const res = await api.post(`/mappings/jobs/${activeJob.jobId}/retry`, {}, {
         timeout: API_TIMEOUTS.DEFAULT,
       });
       if (res.data?.success && res.data?.data?.jobId) {

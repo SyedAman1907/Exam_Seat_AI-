@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import axios from 'axios';
 import { Link, useNavigate } from 'react-router-dom';
+import { useAuth } from '../../context/AuthContext';
 import api, { API_TIMEOUTS, formatApiError } from '../../services/api';
 import { formatExamTimeRange, formatSessionLabel } from '../../utils/dateTime';
 import { resolveExamType } from '../../utils/examType';
@@ -22,10 +23,13 @@ import {
 import { downloadProtectedReport } from '../../utils/fileDownloader';
 
 const Dashboard = () => {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [actionMessage, setActionMessage] = useState({ type: '', text: '' });
+  const publishLockRef = useRef(false);
 
   // Stats & Mappings
   const [stats, setStats] = useState({
@@ -130,14 +134,29 @@ const Dashboard = () => {
   }, [fetchAllData]);
 
   const confirmPublish = async () => {
-    if (!publishModalExam) return;
+    if (!publishModalExam || publishLockRef.current || actionLoading) return;
+    if (!isAdmin) {
+      setActionMessage({
+        type: 'error',
+        text: 'Only an Administrator is authorized to approve and publish examinations.',
+      });
+      setPublishModalExam(null);
+      return;
+    }
+    publishLockRef.current = true;
     try {
       setActionLoading(true);
       setActionMessage({ type: '', text: '' });
-      const res = await api.post(`/exams/${publishModalExam._id}/publish`, null, {
+      const res = await api.post(`/exams/${publishModalExam._id}/publish`, {}, {
         timeout: API_TIMEOUTS.HEAVY_WRITE,
       });
-      if (res.data.success) {
+      if (res.data?.success) {
+        const updatedExam = res.data.data;
+        if (updatedExam?._id) {
+          setAllExams((prev) =>
+            prev.map((item) => (String(item._id) === String(updatedExam._id) ? updatedExam : item))
+          );
+        }
         setActionMessage({
           type: 'success',
           text: res.data.message || 'Examination approved and published successfully!',
@@ -152,6 +171,7 @@ const Dashboard = () => {
       });
       setPublishModalExam(null);
     } finally {
+      publishLockRef.current = false;
       setActionLoading(false);
     }
   };
@@ -651,7 +671,7 @@ const Dashboard = () => {
         {renderExamTable(
           pendingExams,
           'No examinations currently pending Admin review. All scheduled exams have been published or approved.',
-          true,
+          isAdmin,
           'amber'
         )}
       </div>

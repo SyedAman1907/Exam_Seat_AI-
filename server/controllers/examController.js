@@ -1809,6 +1809,88 @@ exports.requestCancelExam = async (req, res) => {
   }
 };
 
+// @desc    Admin manual approval (marks exam APPROVED & schedules T-20 release without forcing immediate publish)
+// @route   POST /api/exams/:id/approve
+// @access  Private (Admin Only)
+exports.approveExam = async (req, res) => {
+  try {
+    if (!req.user || req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        code: 'FORBIDDEN_APPROVE',
+        message: 'Only an administrator can approve examinations.',
+      });
+    }
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({
+        success: false,
+        code: 'INVALID_EXAM_ID',
+        message: 'Invalid examination ID.',
+      });
+    }
+
+    const exam = await Exam.findById(req.params.id);
+    if (!exam) {
+      return res.status(404).json({ success: false, message: 'Examination not found.' });
+    }
+    if (exam.approvalStatus === 'CANCELLED' || exam.status === 'CANCELLED') {
+      return res.status(400).json({ success: false, code: 'EXAM_CANCELLED', message: 'Cannot approve a cancelled examination.' });
+    }
+    if (exam.status === 'COMPLETED') {
+      return res.status(400).json({ success: false, code: 'EXAM_COMPLETED', message: 'Cannot approve a completed examination.' });
+    }
+    if (exam.approvalStatus === 'APPROVED') {
+      return res.status(200).json({
+        success: true,
+        alreadyApproved: true,
+        message: 'Examination is already approved.',
+        data: exam,
+      });
+    }
+
+    const now = new Date();
+    const publicationTime = exam.publicationTime || new Date((exam.startDateTime || now).getTime() - 20 * 60 * 1000);
+    exam.approvalStatus = 'APPROVED';
+    exam.approvedBy = req.user._id;
+    exam.approvedByName = req.user.name;
+    exam.approvedAt = now;
+    exam.publicationTime = publicationTime;
+    if (!['PUBLISHED', 'ONGOING'].includes(exam.status)) {
+      exam.visibilityStatus = 'SCHEDULED';
+      exam.status = 'SCHEDULED';
+    }
+    await exam.save();
+
+    if (exam.currentAllocationId) {
+      await Allocation.findByIdAndUpdate(exam.currentAllocationId, {
+        $set: { status: exam.status === 'PUBLISHED' ? 'PUBLISHED' : 'SCHEDULED' },
+      });
+    }
+
+    await AuditLog.create({
+      action: 'EXAM_APPROVED',
+      performedBy: req.user._id,
+      performedByName: req.user.name,
+      examId: exam._id,
+      details: {
+        examName: exam.examName,
+        subjectCode: exam.subjectCode,
+        publicationTime,
+      },
+    });
+
+    portalCache.invalidatePortalCache(exam._id);
+    return res.status(200).json({
+      success: true,
+      message: 'Examination approved cleanly. Ready for scheduled or manual publication.',
+      data: exam,
+    });
+  } catch (error) {
+    console.error('[Approve Exam Error]:', error);
+    return res.status(500).json({ success: false, message: error?.message || 'Failed to approve examination.' });
+  }
+};
+
 // @desc    Admin manual review & publish examination (Requirements 5 & 6)
 // @route   POST /api/exams/:id/publish
 // @access  Private (Admin Only)
@@ -1818,7 +1900,16 @@ exports.publishExam = async (req, res) => {
     if (!req.user || req.user.role !== 'admin') {
       return res.status(403).json({
         success: false,
+        code: 'FORBIDDEN_PUBLISH',
         message: 'Only an administrator can approve and publish examinations. Faculty cannot publish.',
+      });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({
+        success: false,
+        code: 'INVALID_EXAM_ID',
+        message: 'Invalid examination ID. Please select a valid examination before publishing.',
       });
     }
 
@@ -1828,7 +1919,51 @@ exports.publishExam = async (req, res) => {
     }
 
     if (exam.approvalStatus === 'CANCELLED' || exam.status === 'CANCELLED') {
-      return res.status(400).json({ success: false, message: 'Cannot publish a cancelled examination.' });
+      return res.status(400).json({
+        success: false,
+        code: 'EXAM_CANCELLED',
+        message: 'Cannot publish a cancelled examination.',
+      });
+    }
+
+    if (exam.status === 'COMPLETED') {
+      return res.status(400).json({
+        success: false,
+        code: 'EXAM_COMPLETED',
+        message: 'Cannot publish a completed examination. Historical examination records are preserved.',
+      });
+    }
+
+    if (exam.visibilityStatus === 'PUBLISHED' || exam.status === 'PUBLISHED' || exam.status === 'ONGOING') {
+      return res.status(409).json({
+        success: false,
+        code: 'ALREADY_PUBLISHED',
+        message: 'This examination is already published to students and cannot be published repeatedly.',
+      });
+    }
+
+    if (exam.status === 'DRAFT' || exam.approvalStatus === 'DRAFT') {
+      return res.status(400).json({
+        success: false,
+        code: 'EXAM_DRAFT',
+        message: 'Draft examinations must be submitted for review before publication.',
+      });
+    }
+
+    if (exam.approvalStatus === 'REJECTED') {
+      return res.status(400).json({
+        success: false,
+        code: 'EXAM_REJECTED',
+        message: 'Rejected examinations cannot be published. Please revise and resubmit for review.',
+      });
+    }
+
+    if (req.body?.requirePriorApproval === true && exam.approvalStatus !== 'APPROVED') {
+      return res.status(400).json({
+        success: false,
+        code: 'REQUIRES_ADMIN_APPROVAL',
+        message: 'Pending examinations must be approved by an Admin before publication.',
+      });
     }
 
     // 2. Pre-publication Validations (Requirement 5)
@@ -2397,7 +2532,7 @@ exports.checkClassroomAvailability = async (req, res) => {
     let range;
     try {
       range = parseExamDateRange(examDate, startTime, endTime, null, {
-        allowOvernight: Boolean(src.allowOvernight),
+        allowOvernight: src.allowOvernight === true || src.allowOvernight === 'true',
         session: session || null,
       });
     } catch (timeErr) {

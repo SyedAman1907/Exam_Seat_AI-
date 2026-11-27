@@ -113,7 +113,7 @@ export const AuthProvider = ({ children }) => {
   const logout = async () => {
     try {
       if (token) {
-        await api.post('/auth/logout', null, { timeout: 3000 });
+        await api.post('/auth/logout', {}, { timeout: 3000 });
       }
     } catch (e) {
       console.warn('[AuthContext] Logout request failed:', e?.message || e);

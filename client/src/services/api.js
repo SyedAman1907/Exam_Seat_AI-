@@ -131,9 +131,16 @@ api.interceptors.request.use(
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
-    // For FormData requests, let browser/axios compute the multipart boundary header
-    if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+    const isFormData = typeof FormData !== 'undefined' && config.data instanceof FormData;
+    if (isFormData) {
+      // For FormData requests, let browser/axios compute the multipart boundary header
       delete config.headers['Content-Type'];
+    } else {
+      const reqMethod = String(config.method || 'get').toLowerCase();
+      if ((reqMethod === 'post' || reqMethod === 'put' || reqMethod === 'patch') && (config.data === null || config.data === undefined || config.data === 'null')) {
+        // Never allow Axios to serialize null into literal "null", which Express strict JSON parser rejects with 400
+        config.data = {};
+      }
     }
     return config;
   },

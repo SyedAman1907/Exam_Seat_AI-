@@ -365,5 +365,13 @@ examSchema.index(
 examSchema.index({ createdBy: 1, createdAt: -1 });
 examSchema.index({ academicYear: 1, semester: 1, isDeleted: 1 });
 examSchema.index({ isDeleted: 1, examType: 1, examDate: 1 }, { name: 'exam_type_date_idx' });
+examSchema.index(
+  { isDeleted: 1, classroomId: 1, startDateTime: 1, endDateTime: 1 },
+  { name: 'exam_room_interval_idx' }
+);
+examSchema.index(
+  { isDeleted: 1, 'sectionAllocations.classroomId': 1, startDateTime: 1, endDateTime: 1 },
+  { name: 'exam_sec_room_interval_idx' }
+);
 
 module.exports = mongoose.model('Exam', examSchema);

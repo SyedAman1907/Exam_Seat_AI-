@@ -760,6 +760,26 @@ exports.publishAllocation = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Examination not found.' });
     }
 
+    if (exam.status === 'CANCELLED' || exam.approvalStatus === 'CANCELLED') {
+      return res.status(400).json({ success: false, code: 'EXAM_CANCELLED', message: 'Cannot publish a cancelled examination.' });
+    }
+    if (exam.status === 'COMPLETED') {
+      return res.status(400).json({ success: false, code: 'EXAM_COMPLETED', message: 'Cannot publish a completed examination.' });
+    }
+    if (exam.visibilityStatus === 'PUBLISHED' || exam.status === 'PUBLISHED' || exam.status === 'ONGOING') {
+      return res.status(409).json({
+        success: false,
+        code: 'ALREADY_PUBLISHED',
+        message: 'This examination has already been published to students and cannot be published repeatedly.',
+      });
+    }
+    if (exam.status === 'DRAFT' || exam.approvalStatus === 'DRAFT') {
+      return res.status(400).json({ success: false, code: 'EXAM_DRAFT', message: 'Draft examinations cannot be published before submission and approval.' });
+    }
+    if (exam.approvalStatus === 'REJECTED') {
+      return res.status(400).json({ success: false, code: 'EXAM_REJECTED', message: 'Rejected examinations cannot be published.' });
+    }
+
     const now = new Date();
     const publicationTime = exam.publicationTime || new Date((exam.startDateTime || now).getTime() - 20 * 60 * 1000);
     const isImmediate = now >= publicationTime;

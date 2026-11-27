@@ -131,6 +131,24 @@ async function ensureExamIndexes() {
       );
       console.log('[Database Migration] Created exam type index "exam_type_date_idx".');
     }
+
+    const hasRoomIntervalIndex = existingIndexes.some((idx) => idx.name === 'exam_room_interval_idx');
+    if (!hasRoomIntervalIndex) {
+      await examsCollection.createIndex(
+        { isDeleted: 1, classroomId: 1, startDateTime: 1, endDateTime: 1 },
+        { name: 'exam_room_interval_idx', background: true }
+      );
+      console.log('[Database Migration] Created availability index "exam_room_interval_idx".');
+    }
+
+    const hasSecRoomIntervalIndex = existingIndexes.some((idx) => idx.name === 'exam_sec_room_interval_idx');
+    if (!hasSecRoomIntervalIndex) {
+      await examsCollection.createIndex(
+        { isDeleted: 1, 'sectionAllocations.classroomId': 1, startDateTime: 1, endDateTime: 1 },
+        { name: 'exam_sec_room_interval_idx', background: true }
+      );
+      console.log('[Database Migration] Created availability index "exam_sec_room_interval_idx".');
+    }
   } catch (err) {
     console.error('[Database Migration Error in ensureExamIndexes]:', err.message);
   }

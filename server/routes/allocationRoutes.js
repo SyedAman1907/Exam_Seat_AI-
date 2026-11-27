@@ -10,7 +10,7 @@ const {
   publishAllocation,
   unlockAllocation,
 } = require('../controllers/allocationController');
-const { protect } = require('../middleware/auth');
+const { protect, authorize } = require('../middleware/auth');
 
 router.use(protect);
 
@@ -40,8 +40,8 @@ router.post('/:id/verify', verifyAllocation);
 router.post('/lock', lockAllocation);
 router.post('/:id/lock', lockAllocation);
 
-router.post('/publish', publishAllocation);
-router.post('/:id/publish', publishAllocation);
+router.post('/publish', authorize('admin'), publishAllocation);
+router.post('/:id/publish', authorize('admin'), publishAllocation);
 
 router.post('/unlock', unlockAllocation);
 router.post('/:id/unlock', unlockAllocation);

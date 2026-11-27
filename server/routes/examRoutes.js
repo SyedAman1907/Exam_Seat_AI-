@@ -8,6 +8,7 @@ const {
   deleteExam,
   getRosterPreview,
   retryExam,
+  approveExam,
   publishExam,
   rejectExam,
   cancelExam,
@@ -31,6 +32,7 @@ router.post('/:id/retry', retryExam);
 router.post('/:id/request-cancel', requestCancelExam);
 
 // Admin Approval & Publication Actions (Requirements 5 & 6)
+router.post('/:id/approve', authorize('admin'), approveExam);
 router.post('/:id/publish', authorize('admin'), publishExam);
 router.post('/:id/reject', authorize('admin'), rejectExam);
 router.post('/:id/cancel', authorize('admin'), cancelExam);

@@ -413,6 +413,15 @@ app.use((err, req, res, next) => {
     err.message
   );
 
+  if (err.type === 'entity.parse.failed' || (err instanceof SyntaxError && statusCode === 400 && 'body' in err)) {
+    return res.status(400).json({
+      success: false,
+      code: 'INVALID_JSON_PAYLOAD',
+      requestId: req.requestId,
+      message: 'Invalid JSON request payload. Expected a valid JSON object.',
+    });
+  }
+
   if (err.name === 'MulterError') {
     if (err.code === 'LIMIT_FILE_SIZE') {
       return res.status(400).json({

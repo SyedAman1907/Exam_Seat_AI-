@@ -102,9 +102,9 @@ async function seedTestEnvironment() {
   return { admin, incharge, faculty, mappingIds };
 }
 
-function httpRequest(port, { method, path, headers = {}, body = null }) {
+function httpRequest(port, { method, path, headers = {}, body = null, rawBody = null }) {
   return new Promise((resolve, reject) => {
-    const payload = body ? JSON.stringify(body) : null;
+    const payload = rawBody !== null ? String(rawBody) : body ? JSON.stringify(body) : null;
     const req = http.request(
       {
         hostname: '127.0.0.1',
@@ -311,15 +311,89 @@ async function run() {
     assert.strictEqual(adminLogin.status, 200);
     const adminToken = adminLogin.json.token;
 
+    // 8a. Unauthorized Exam Incharge must NOT be able to publish (403)
+    const unauthPublishRes = await httpRequest(port, {
+      method: 'POST',
+      path: `/api/exams/${examId}/publish`,
+      headers: { Authorization: `Bearer ${incToken}` },
+      body: {},
+    });
+    assert.strictEqual(unauthPublishRes.status, 403, 'Exam Incharge must receive 403 on publish');
+    assert.strictEqual(unauthPublishRes.jsonValid, true);
+
+    // 8b. Literal "null" JSON payload must fail cleanly with structured INVALID_JSON_PAYLOAD 400
+    const badJsonPublishRes = await httpRequest(port, {
+      method: 'POST',
+      path: `/api/exams/${examId}/publish`,
+      headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+      rawBody: 'null',
+    });
+    assert.strictEqual(badJsonPublishRes.status, 400);
+    assert.strictEqual(badJsonPublishRes.jsonValid, true);
+    assert.strictEqual(badJsonPublishRes.json.code, 'INVALID_JSON_PAYLOAD');
+
+    // 8c. Live availability GET detects booked conflict and open date cleanly
+    const conflictAvailRes = await httpRequest(port, {
+      method: 'GET',
+      path: `/api/exams/check-availability?examDate=${encodeURIComponent(createPayload.examDate)}&startTime=09:00%20AM&endTime=12:00%20PM&session=AM&group=Group%20A&allowOvernight=false`,
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    assert.strictEqual(conflictAvailRes.status, 200);
+    assert.strictEqual(conflictAvailRes.json.available, false);
+    assert.ok(Array.isArray(conflictAvailRes.json.conflicts) && conflictAvailRes.json.conflicts.length > 0);
+
+    const openAvailRes = await httpRequest(port, {
+      method: 'GET',
+      path: `/api/exams/check-availability?examDate=2028-12-20&startTime=09:00%20AM&endTime=12:00%20PM&session=AM&group=Group%20A&allowOvernight=false`,
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    assert.strictEqual(openAvailRes.status, 200);
+    assert.strictEqual(openAvailRes.json.available, true);
+
+    // 8d. Strict requirePriorApproval rejects PENDING_REVIEW exam before Admin approval
+    const strictBeforeApprove = await httpRequest(port, {
+      method: 'POST',
+      path: `/api/exams/${examId}/publish`,
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: { requirePriorApproval: true },
+    });
+    assert.strictEqual(strictBeforeApprove.status, 400);
+    assert.strictEqual(strictBeforeApprove.json.code, 'REQUIRES_ADMIN_APPROVAL');
+
+    // 8e. Admin Approve & Publish with valid {} JSON body
     const approveRes = await httpRequest(port, {
       method: 'POST',
       path: `/api/exams/${examId}/publish`,
       headers: { Authorization: `Bearer ${adminToken}` },
+      body: {},
     });
     assert.strictEqual(approveRes.status, 200);
     assert.strictEqual(approveRes.jsonValid, true);
     assert.strictEqual(approveRes.json.success, true);
     assert.strictEqual(approveRes.json.data.approvalStatus, 'APPROVED');
+
+    // 8f. Repeated publish once already PUBLISHED must be rejected cleanly (409 ALREADY_PUBLISHED),
+    // and COMPLETED exams must return 400 EXAM_COMPLETED
+    await Exam.findByIdAndUpdate(examId, { $set: { status: 'PUBLISHED', visibilityStatus: 'PUBLISHED' } });
+    const repeatPublishRes = await httpRequest(port, {
+      method: 'POST',
+      path: `/api/exams/${examId}/publish`,
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: {},
+    });
+    assert.strictEqual(repeatPublishRes.status, 409);
+    assert.strictEqual(repeatPublishRes.json.code, 'ALREADY_PUBLISHED');
+
+    await Exam.findByIdAndUpdate(examId, { $set: { status: 'COMPLETED' } });
+    const completedPublishRes = await httpRequest(port, {
+      method: 'POST',
+      path: `/api/exams/${examId}/publish`,
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: {},
+    });
+    assert.strictEqual(completedPublishRes.status, 400);
+    assert.strictEqual(completedPublishRes.json.code, 'EXAM_COMPLETED');
+    await Exam.findByIdAndUpdate(examId, { $set: { status: 'SCHEDULED', visibilityStatus: 'SCHEDULED' } });
 
     // 9. Faculty login + scoped examination access + Logout & re-login
     const facLogin = await httpRequest(port, {
