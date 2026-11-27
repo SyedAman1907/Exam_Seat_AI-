@@ -176,8 +176,46 @@ const corsMiddleware = cors((req, callback) => {
 app.use(corsMiddleware);
 app.options('*', corsMiddleware);
 
-app.use(express.json({ limit: '10mb' }));
+const OPTIONAL_EMPTY_BODY_POST_RE =
+  /^\/api\/(?:auth\/logout|exams\/(?:[^/]+\/)?(?:approve|publish|allocate|verify|lock)|mappings\/jobs\/[^/]+\/retry)\/?$/i;
+
+app.use(express.json({ limit: '10mb', strict: false }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Normalize optional empty/null bodies on action endpoints while strictly requiring object payloads elsewhere
+app.use('/api', (req, res, next) => {
+  if (!['POST', 'PUT', 'PATCH'].includes(req.method)) {
+    return next();
+  }
+  const contentType = String(req.headers['content-type'] || '').toLowerCase();
+  if (contentType.includes('multipart/form-data')) {
+    return next();
+  }
+  if (req.method === 'POST' && OPTIONAL_EMPTY_BODY_POST_RE.test(req.originalUrl.split('?')[0])) {
+    if (req.body === null || req.body === undefined) {
+      req.body = {};
+    }
+    return next();
+  }
+  if (
+    contentType.includes('application/json') &&
+    (req.body === null || typeof req.body !== 'object' || Array.isArray(req.body))
+  ) {
+    console.warn('[Invalid JSON Object Shape]', {
+      requestId: req.requestId || 'none',
+      endpoint: req.originalUrl,
+      method: req.method,
+      bodyType: req.body === null ? 'null' : Array.isArray(req.body) ? 'array' : typeof req.body,
+    });
+    return res.status(400).json({
+      success: false,
+      code: 'INVALID_JSON_PAYLOAD',
+      requestId: req.requestId,
+      message: 'Invalid JSON request payload. Expected a valid JSON object.',
+    });
+  }
+  return next();
+});
 
 // Graceful request timeout guard (longer for PDF/Excel exports and bulk uploads)
 app.use('/api', (req, res, next) => {

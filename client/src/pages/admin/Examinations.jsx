@@ -209,6 +209,8 @@ const Examinations = () => {
   const skipNextTabEffectRef = useRef(false);
   const submitLockRef = useRef(false);
   const publishLockRef = useRef(false);
+  const rejectLockRef = useRef(false);
+  const cancelLockRef = useRef(false);
   const lastCreatedExamRef = useRef({ signature: '', examId: '', createdAt: 0 });
   const deleteLockRef = useRef(false);
   const titleManuallyEditedRef = useRef(false);
@@ -1014,27 +1016,43 @@ const Examinations = () => {
 
   const confirmRejectExam = async (e) => {
     e.preventDefault();
-    if (!rejectModalExam) return;
+    if (!rejectModalExam || rejectLockRef.current || rejecting) return;
     if (!rejectReason.trim()) {
       setActionError('A rejection reason is required.');
       return;
     }
+    const targetExam = rejectModalExam;
+    rejectLockRef.current = true;
+    let rejectedOk = false;
     try {
       setRejecting(true);
       setActionError('');
-      const res = await api.post(`/exams/${rejectModalExam._id}/reject`, {
+      const res = await api.post(`/exams/${targetExam._id}/reject`, {
         reason: rejectReason.trim(),
       });
       if (res.data?.success) {
-        setSuccessBanner(`Examination "${rejectModalExam.examName || rejectModalExam.subjectName}" rejected.`);
+        rejectedOk = true;
+        const updatedExam = res.data.data;
+        if (updatedExam?._id) {
+          setExams((prev) =>
+            prev.map((ex) => (String(ex._id) === String(updatedExam._id) ? updatedExam : ex))
+          );
+        }
+        if (targetExam.approvalStatus === 'PENDING_REVIEW') {
+          setPendingReviewCount((prev) => Math.max(0, prev - 1));
+        }
+        setSuccessBanner(`Examination "${targetExam.examName || targetExam.subjectName}" rejected.`);
         setRejectModalExam(null);
         setRejectReason('Needs correction in seating or mappings.');
-        await fetchExams();
       }
     } catch (err) {
       setActionError(formatApiError(err, 'Failed to reject examination.'));
     } finally {
+      rejectLockRef.current = false;
       setRejecting(false);
+    }
+    if (rejectedOk) {
+      await fetchExams(null, { preserveOnFailure: true, background: true });
     }
   };
 
@@ -1065,30 +1083,43 @@ const Examinations = () => {
 
   const confirmCancelExam = async (e) => {
     e.preventDefault();
-    if (!cancelModalExam) return;
+    if (!cancelModalExam || cancelLockRef.current || cancelling) return;
     if (!cancelReason.trim()) {
       setActionError('A formal cancellation reason is required.');
       return;
     }
+    const targetExam = cancelModalExam;
+    cancelLockRef.current = true;
+    let cancelledOk = false;
     try {
       setCancelling(true);
       setActionError('');
-      const res = await api.post(`/exams/${cancelModalExam._id}/cancel`, {
+      const res = await api.post(`/exams/${targetExam._id}/cancel`, {
         reason: cancelReason.trim(),
       });
       if (res.data?.success) {
+        cancelledOk = true;
+        const updatedExam = res.data.data;
+        if (updatedExam?._id) {
+          setExams((prev) =>
+            prev.map((ex) => (String(ex._id) === String(updatedExam._id) ? updatedExam : ex))
+          );
+        }
         setSuccessBanner(
           res.data.message || 'Examination cancelled cleanly. Classroom reservations released & history preserved.'
         );
         setCancelModalExam(null);
         setCancelReason('');
-        await fetchExams();
       }
     } catch (err) {
       setActionError(formatApiError(err, 'Failed to cancel examination.'));
       setCancelModalExam(null);
     } finally {
+      cancelLockRef.current = false;
       setCancelling(false);
+    }
+    if (cancelledOk) {
+      await fetchExams(null, { preserveOnFailure: true, background: true });
     }
   };
 

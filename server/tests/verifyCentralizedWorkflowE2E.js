@@ -311,7 +311,15 @@ async function run() {
     assert.strictEqual(adminLogin.status, 200);
     const adminToken = adminLogin.json.token;
 
-    // 8a. Unauthorized Exam Incharge must NOT be able to publish (403)
+    // 8a. Unauthorized Exam Incharge must NOT be able to approve or publish (403)
+    const unauthApproveRes = await httpRequest(port, {
+      method: 'POST',
+      path: `/api/exams/${examId}/approve`,
+      headers: { Authorization: `Bearer ${incToken}` },
+      body: {},
+    });
+    assert.strictEqual(unauthApproveRes.status, 403, 'Exam Incharge must receive 403 on approve');
+
     const unauthPublishRes = await httpRequest(port, {
       method: 'POST',
       path: `/api/exams/${examId}/publish`,
@@ -321,16 +329,26 @@ async function run() {
     assert.strictEqual(unauthPublishRes.status, 403, 'Exam Incharge must receive 403 on publish');
     assert.strictEqual(unauthPublishRes.jsonValid, true);
 
-    // 8b. Literal "null" JSON payload must fail cleanly with structured INVALID_JSON_PAYLOAD 400
-    const badJsonPublishRes = await httpRequest(port, {
+    // 8b. Truly malformed JSON syntax fails with INVALID_JSON_PAYLOAD 400, AND literal "null" on object endpoints fails with INVALID_JSON_PAYLOAD 400
+    const badJsonSyntaxRes = await httpRequest(port, {
       method: 'POST',
       path: `/api/exams/${examId}/publish`,
       headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+      rawBody: '{bad json',
+    });
+    assert.strictEqual(badJsonSyntaxRes.status, 400);
+    assert.strictEqual(badJsonSyntaxRes.jsonValid, true);
+    assert.strictEqual(badJsonSyntaxRes.json.code, 'INVALID_JSON_PAYLOAD');
+
+    const nullCreateRes = await httpRequest(port, {
+      method: 'POST',
+      path: '/api/exams/create-centralized',
+      headers: { Authorization: `Bearer ${incToken}`, 'Content-Type': 'application/json' },
       rawBody: 'null',
     });
-    assert.strictEqual(badJsonPublishRes.status, 400);
-    assert.strictEqual(badJsonPublishRes.jsonValid, true);
-    assert.strictEqual(badJsonPublishRes.json.code, 'INVALID_JSON_PAYLOAD');
+    assert.strictEqual(nullCreateRes.status, 400);
+    assert.strictEqual(nullCreateRes.jsonValid, true);
+    assert.strictEqual(nullCreateRes.json.code, 'INVALID_JSON_PAYLOAD');
 
     // 8c. Live availability GET detects booked conflict and open date cleanly
     const conflictAvailRes = await httpRequest(port, {
@@ -360,7 +378,7 @@ async function run() {
     assert.strictEqual(publishPendingRes.status, 400);
     assert.strictEqual(publishPendingRes.json.code, 'REQUIRES_ADMIN_APPROVAL');
 
-    // 8e. Admin approves the examination first (POST /api/exams/:id/approve)
+    // 8e. Admin approves the examination first (POST /api/exams/:id/approve) + duplicate approval stays idempotent
     const approveRes = await httpRequest(port, {
       method: 'POST',
       path: `/api/exams/${examId}/approve`,
@@ -372,7 +390,17 @@ async function run() {
     assert.strictEqual(approveRes.json.success, true);
     assert.strictEqual(approveRes.json.data.approvalStatus, 'APPROVED');
 
+    const dupApproveRes = await httpRequest(port, {
+      method: 'POST',
+      path: `/api/exams/${examId}/approve`,
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: {},
+    });
+    assert.strictEqual(dupApproveRes.status, 200);
+    assert.strictEqual(dupApproveRes.json.alreadyApproved, true);
+
     // 8f. Admin publishes the approved examination (POST /api/exams/:id/publish)
+    // Also confirm legacy cached "null" body on optional-body /publish is normalized safely without 400 parse crash
     const publishRes = await httpRequest(port, {
       method: 'POST',
       path: `/api/exams/${examId}/publish`,
@@ -394,6 +422,16 @@ async function run() {
     });
     assert.strictEqual(repeatScheduledRes.status, 409);
     assert.strictEqual(repeatScheduledRes.json.code, 'ALREADY_PUBLISHED');
+
+    // Legacy cached client sending raw "null" body on /publish must be normalized cleanly to {} (reaching lifecycle guard, NOT 400 INVALID_JSON_PAYLOAD)
+    const legacyNullBodyPublishRes = await httpRequest(port, {
+      method: 'POST',
+      path: `/api/exams/${examId}/publish`,
+      headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+      rawBody: 'null',
+    });
+    assert.strictEqual(legacyNullBodyPublishRes.status, 409);
+    assert.strictEqual(legacyNullBodyPublishRes.json.code, 'ALREADY_PUBLISHED');
 
     await Exam.findByIdAndUpdate(examId, { $set: { status: 'CANCELLED', approvalStatus: 'CANCELLED' } });
     const cancelledPublishRes = await httpRequest(port, {
