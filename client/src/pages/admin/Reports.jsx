@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import api, { API_TIMEOUTS, formatApiError } from '../../services/api';
 import { downloadProtectedReport } from '../../utils/fileDownloader';
 import { formatExamTimeRange, formatSessionLabel } from '../../utils/dateTime';
+import { resolveExamType } from '../../utils/examType';
 import {
   FileText,
   FileSpreadsheet,
@@ -215,7 +216,7 @@ const Reports = () => {
             >
               {exams.map((ex) => (
                 <option key={ex._id} value={ex._id}>
-                  {ex.subjectName} ({ex.subjectCode}) • {ex.group || 'Group A'} • {ex.examDate} ({formatSessionLabel(ex.session, ex.startTime)})
+                  [{resolveExamType(ex)}] {ex.subjectName} ({ex.subjectCode}) • {ex.group || 'Group A'} • {ex.examDate} ({formatSessionLabel(ex.session, ex.startTime)})
                 </option>
               ))}
             </select>
@@ -394,6 +395,9 @@ const Reports = () => {
         {exam && (
           <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 text-xs">
             <div className="flex items-center space-x-3">
+              <span className="px-2 py-0.5 rounded bg-indigo-100 text-indigo-800 font-bold text-[10px]">
+                {resolveExamType(exam)}
+              </span>
               <span className="font-bold text-navy-800">{exam.examName}</span>
               <span className="text-slate-400">•</span>
               <span className="font-medium text-slate-600">

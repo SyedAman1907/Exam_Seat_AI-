@@ -3,6 +3,7 @@ import axios from 'axios';
 import { Link, useNavigate } from 'react-router-dom';
 import api, { API_TIMEOUTS, formatApiError } from '../../services/api';
 import { formatExamTimeRange, formatSessionLabel } from '../../utils/dateTime';
+import { resolveExamType } from '../../utils/examType';
 import {
   Users,
   Grid3X3,
@@ -270,7 +271,12 @@ const Dashboard = () => {
               <tr key={exam._id} className="hover:bg-slate-50/80 transition-colors">
                 <td className="py-3 px-3">
                   <div className="font-bold text-navy-800">{exam.subjectName}</div>
-                  <div className="text-[10px] font-mono text-primary font-semibold">{exam.subjectCode}</div>
+                  <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                    <span className="text-[10px] font-mono text-primary font-semibold">{exam.subjectCode}</span>
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                      {resolveExamType(exam)}
+                    </span>
+                  </div>
                 </td>
                 <td className="py-3 px-3 text-slate-700 font-medium">
                   {exam.facultyName || 'Dr. K. Subba Rao'}

@@ -1,6 +1,7 @@
 const path = require('path');
 const fs = require('fs');
 const { formatExamTimeRange, normalizeDateStr, formatSessionLabel } = require('../utils/dateTimeUtils');
+const { resolveExamType } = require('../utils/examTypeUtils');
 
 const LOGO_PATH = path.join(__dirname, '../assets/rgmcet-logo.jpg');
 const DEPT_LOGO_PATH = path.join(__dirname, '../assets/dept-logo-1.png');
@@ -76,7 +77,8 @@ class ReportTemplates {
     doc.fontSize(8.5).font('Times-Roman').fillColor('#334155');
 
     // Left column: Width strictly bounded to 265 to prevent any overlap
-    doc.text(`Examination: ${exam.examName || 'University Examination'}`, 42, 86, { width: 265, lineBreak: false, ellipsis: true });
+    const resolvedType = resolveExamType(exam);
+    doc.text(`Examination: ${exam.examName || 'University Examination'} [${resolvedType}]`, 42, 86, { width: 265, lineBreak: false, ellipsis: true });
     doc.text(`Academic Year: ${exam.academicYear || '2026-2027'} | Year & Sem: ${exam.year || 'III Year'} - ${exam.semester || 'I Semester'}`, 42, 99, { width: 265, lineBreak: false, ellipsis: true });
     doc.text(`Subject: ${exam.subjectName} (${exam.subjectCode})`, 42, 112, { width: 265, lineBreak: false, ellipsis: true });
     doc.text(`Section: ${exam.section || 'A1'} | Faculty: ${exam.facultyName || 'CSE Faculty'}`, 42, 125, { width: 265, lineBreak: false, ellipsis: true });

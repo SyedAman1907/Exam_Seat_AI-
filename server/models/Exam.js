@@ -1,10 +1,19 @@
 const mongoose = require('mongoose');
+const { EXAM_TYPES } = require('../utils/examTypeUtils');
 
 const examSchema = new mongoose.Schema({
   examName: {
     type: String,
     required: [true, 'Examination name is required'],
     trim: true,
+  },
+  examType: {
+    type: String,
+    enum: EXAM_TYPES,
+    default: 'MID-TERM 1',
+    trim: true,
+    uppercase: true,
+    index: true,
   },
   academicYear: {
     type: String,
@@ -355,5 +364,6 @@ examSchema.index(
 );
 examSchema.index({ createdBy: 1, createdAt: -1 });
 examSchema.index({ academicYear: 1, semester: 1, isDeleted: 1 });
+examSchema.index({ isDeleted: 1, examType: 1, examDate: 1 }, { name: 'exam_type_date_idx' });
 
 module.exports = mongoose.model('Exam', examSchema);

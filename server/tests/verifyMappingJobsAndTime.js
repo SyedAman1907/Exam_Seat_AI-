@@ -370,7 +370,74 @@ async function run() {
       assert.ok(overlapConflict, 'Overlapping 11:30 AM - 01:30 PM in same room must be detected');
       assert.strictEqual(String(overlapConflict._id), String(morningExam._id));
 
-      console.log('[Jobs, Time & SchedulerLock Verification] PASSED: Continuation PDF parsing, background mapping jobs + partial retry, 12h time conversion, room-conflict timestamps, and distributed lock succeeded.');
+      // 5. Verify X-Request-Id header, Exam Type enum, historical backfill, and edit preservation
+      const { normalizeExamType, resolveExamType, inferExamTypeFromTitle } = require('../utils/examTypeUtils');
+      const ensureExamIndexes = require('../utils/ensureExamIndexes');
+      assert.strictEqual(normalizeExamType('unit 3'), 'UNIT 3');
+      assert.strictEqual(normalizeExamType('mid term 2'), 'MID-TERM 2');
+      assert.strictEqual(inferExamTypeFromTitle('III Year I Sem UNIT 1 Examination'), 'UNIT 1');
+
+      const unitExam = await Exam.create({
+        examName: 'III Year I Semester UNIT 1 Examination',
+        examType: 'UNIT 1',
+        subjectName: 'IQTA',
+        subjectCode: '20A05505T',
+        examDate: '2026-12-15',
+        startTime: '02:00 PM',
+        endTime: '03:00 PM',
+        session: 'PM',
+        group: 'Group A',
+        section: 'A1',
+        classroomId: room._id,
+        status: 'GENERATED',
+        approvalStatus: 'PENDING_REVIEW',
+      });
+      assert.strictEqual(resolveExamType(unitExam), 'UNIT 1');
+
+      // Legacy exam without examType field should safely backfill without duplication
+      const legacyInsert = await Exam.collection.insertOne({
+        examName: 'III Year I Semester MID-TERM 2 Examination',
+        subjectName: 'Legacy Subject',
+        subjectCode: '20A05LEG',
+        examDate: '2026-12-16',
+        section: 'A1',
+        group: 'Group A',
+        isDeleted: false,
+      });
+      await ensureExamIndexes();
+      const backfilled = await Exam.findById(legacyInsert.insertedId).lean();
+      assert.strictEqual(backfilled.examType, 'MID-TERM 2');
+
+      // Verify API filter by ?examType=UNIT 1 and X-Request-Id header
+      const filteredRes = await sendJson(port, {
+        method: 'GET',
+        reqPath: '/api/exams?examType=UNIT%201',
+        headers: { Authorization: `Bearer ${token}`, 'X-Request-Id': 'verify-req-123456' },
+      });
+      assert.strictEqual(filteredRes.status, 200);
+      assert.ok(filteredRes.json.data.some((ex) => String(ex._id) === String(unitExam._id)));
+      assert.strictEqual(typeof filteredRes.json.counts?.pendingReview, 'number');
+
+      // Verify PUT /api/exams/:id preserves examType when omitted, and updates when explicitly changed
+      const editKeepType = await sendJson(port, {
+        method: 'PUT',
+        reqPath: `/api/exams/${unitExam._id}`,
+        headers: { Authorization: `Bearer ${token}` },
+        body: { examName: 'III Year I Semester UNIT 1 Revised' },
+      });
+      assert.strictEqual(editKeepType.status, 200);
+      assert.strictEqual(editKeepType.json.data.examType, 'UNIT 1');
+
+      const editChangeType = await sendJson(port, {
+        method: 'PUT',
+        reqPath: `/api/exams/${unitExam._id}`,
+        headers: { Authorization: `Bearer ${token}` },
+        body: { examType: 'SEMESTER END EXAMINATION' },
+      });
+      assert.strictEqual(editChangeType.status, 200);
+      assert.strictEqual(editChangeType.json.data.examType, 'SEMESTER END EXAMINATION');
+
+      console.log('[Jobs, Time, ExamType & SchedulerLock Verification] PASSED: Continuation PDF parsing, background mapping jobs + partial retry, 12h time conversion, room-conflict timestamps, examType CRUD/backfill/filtering, and distributed lock succeeded.');
     } finally {
       await new Promise((r) => server.close(r));
     }

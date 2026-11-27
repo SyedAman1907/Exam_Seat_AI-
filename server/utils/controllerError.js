@@ -8,11 +8,15 @@ const { isDbConnectivityError } = require('../config/db');
  * - Logs full message server-side while preventing raw URIs, credentials, or stack traces from leaking in HTTP 500 responses
  */
 function sendControllerError(res, error, logLabel = 'Controller Error', publicMessage = 'An unexpected server error occurred. Please try again.') {
+  const requestId = res.getHeader?.('X-Request-Id') || undefined;
+  const reqInfo = res.req ? `${res.req.method} ${res.req.originalUrl}` : 'unknown-endpoint';
+
   if (isDbConnectivityError(error) || mongoose.connection.readyState !== 1) {
-    console.warn(`[${logLabel}] Database connectivity error:`, error?.message || 'disconnected');
+    console.warn(`[${logLabel}] [req:${requestId || 'none'}] [${reqInfo}] Database connectivity error:`, error?.message || 'disconnected');
     return res.status(503).json({
       success: false,
       code: 'DATABASE_UNAVAILABLE',
+      ...(requestId ? { requestId } : {}),
       message: 'Database service is temporarily unavailable while reconnecting to MongoDB Atlas. Please retry shortly.',
     });
   }
@@ -21,6 +25,7 @@ function sendControllerError(res, error, logLabel = 'Controller Error', publicMe
     return res.status(400).json({
       success: false,
       code: 'INVALID_IDENTIFIER',
+      ...(requestId ? { requestId } : {}),
       message: 'Invalid record identifier supplied.',
     });
   }
@@ -29,16 +34,18 @@ function sendControllerError(res, error, logLabel = 'Controller Error', publicMe
     return res.status(400).json({
       success: false,
       code: 'VALIDATION_ERROR',
+      ...(requestId ? { requestId } : {}),
       message: error.message || 'Validation failed for submitted data.',
     });
   }
 
   const statusCode = error?.statusCode || 500;
-  console.error(`[${logLabel}]`, error?.message || error);
+  console.error(`[${logLabel}] [req:${requestId || 'none'}] [${reqInfo}] status=${statusCode}`, error?.message || error);
 
   return res.status(statusCode).json({
     success: false,
     code: statusCode >= 500 ? 'SERVER_ERROR' : 'REQUEST_ERROR',
+    ...(requestId ? { requestId } : {}),
     message: statusCode >= 500 ? publicMessage : (error?.message || publicMessage),
   });
 }

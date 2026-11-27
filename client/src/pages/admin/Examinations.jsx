@@ -41,6 +41,11 @@ import {
   formatSessionLabel,
   toMinutesFromMidnight,
 } from '../../utils/dateTime';
+import {
+  EXAM_TYPE_OPTIONS,
+  buildDefaultExamTitle,
+  resolveExamType,
+} from '../../utils/examType';
 import TimeSelect12h from '../../components/TimeSelect12h';
 
 const Examinations = () => {
@@ -145,6 +150,8 @@ const Examinations = () => {
   const [selectedGroupView, setSelectedGroupView] = useState('ALL'); // 'ALL' | 'Group A' | 'Group B'
   const [filterAcademicYear, setFilterAcademicYear] = useState('ALL');
   const [filterSemester, setFilterSemester] = useState('ALL');
+  const [filterExamType, setFilterExamType] = useState('ALL');
+  const [pendingReviewCount, setPendingReviewCount] = useState(0);
   const [fetchError, setFetchError] = useState('');
   const [detailExam, setDetailExam] = useState(null);
 
@@ -196,6 +203,7 @@ const Examinations = () => {
   const submitLockRef = useRef(false);
   const lastCreatedExamRef = useRef({ signature: '', examId: '', createdAt: 0 });
   const deleteLockRef = useRef(false);
+  const titleManuallyEditedRef = useRef(false);
   const [downloadingKey, setDownloadingKey] = useState('');
 
   const [formData, setFormData] = useState({
@@ -204,7 +212,8 @@ const Examinations = () => {
     semester: 'I Semester',
     subjectName: 'Automata Theory and Compiler Design',
     subjectCode: '20A05501T',
-    examName: 'III B.Tech I Semester Mid-Term Examination',
+    examType: 'UNIT 1',
+    examName: buildDefaultExamTitle({ year: 'III Year', semester: 'I Semester', examType: 'UNIT 1' }),
     examDate: getTodayKolkataIso(),
     startTime: '09:00 AM',
     endTime: '12:00 PM',
@@ -251,7 +260,7 @@ const Examinations = () => {
       return;
     }
     fetchExams();
-  }, [activeTab, filterAcademicYear, filterSemester]);
+  }, [activeTab, filterAcademicYear, filterSemester, filterExamType]);
 
   useEffect(() => {
     const newParam = searchParams.get('new');
@@ -375,7 +384,7 @@ const Examinations = () => {
     }
   }, [formData.subjectName, formData.subjectCode, formData.academicYear, formData.year, formData.semester, formData.group, showCreateModal]);
 
-  const fetchExams = async (overrideTab = null, { preserveOnFailure = false } = {}) => {
+  const fetchExams = async (overrideTab = null, { preserveOnFailure = false, background = false } = {}) => {
     if (fetchExamsAbortRef.current) {
       fetchExamsAbortRef.current.abort();
     }
@@ -384,29 +393,36 @@ const Examinations = () => {
     const seq = ++fetchExamsSeqRef.current;
 
     try {
-      if (!preserveOnFailure) {
+      if (!preserveOnFailure && !background) {
         setLoading(true);
         setFetchError('');
       }
-      setRefreshWarning('');
+      if (!background) {
+        setRefreshWarning('');
+      }
       const tabToQuery = overrideTab || activeTab;
       const params = new URLSearchParams();
       params.append('filter', tabToQuery);
       if (filterAcademicYear !== 'ALL') params.append('academicYear', filterAcademicYear);
       if (filterSemester !== 'ALL') params.append('semester', filterSemester);
+      if (filterExamType !== 'ALL') params.append('examType', filterExamType);
 
       const res = await api.get(`/exams?${params.toString()}`, { signal: controller.signal });
       if (seq !== fetchExamsSeqRef.current) return true;
 
       if (res?.data?.success && Array.isArray(res.data.data)) {
         setExams(res.data.data);
+        if (typeof res.data.counts?.pendingReview === 'number') {
+          setPendingReviewCount(res.data.counts.pendingReview);
+        }
         setFetchError('');
+        setRefreshWarning('');
         return true;
       }
 
       const msg = res?.data?.message || 'Unable to retrieve examinations from database.';
       if (preserveOnFailure) {
-        setRefreshWarning(`Examination was saved, but refreshing the list failed: ${msg}`);
+        setRefreshWarning(`Examination changes were saved, but refreshing the list failed: ${msg}`);
       } else {
         setFetchError(msg);
       }
@@ -420,14 +436,14 @@ const Examinations = () => {
       const errMsg = formatApiError(err, 'Failed to load examinations from server.');
       if (preserveOnFailure) {
         setRefreshWarning(
-          `Examination was saved to MongoDB, but refreshing the examination list failed (${errMsg}). Click Refresh to reload.`
+          `Examination was saved to MongoDB, but refreshing the examination list failed (${errMsg}). Click Retry Refresh to reload.`
         );
       } else {
         setFetchError(errMsg);
       }
       return false;
     } finally {
-      if (seq === fetchExamsSeqRef.current && !preserveOnFailure) {
+      if (seq === fetchExamsSeqRef.current && !preserveOnFailure && !background) {
         setLoading(false);
       }
     }
@@ -548,18 +564,25 @@ const Examinations = () => {
   };
 
   const handleSelectQuickPreset = (preset) => {
-    setFormData((prev) => ({
-      ...prev,
-      subjectName: preset.name,
-      subjectCode: preset.code,
-      year: preset.year || prev.year,
-      semester: preset.semester || prev.semester,
-      examName: `${preset.year || prev.year} ${preset.semester || prev.semester} Mid-Term Examination`,
-    }));
+    setFormData((prev) => {
+      const nextYear = preset.year || prev.year;
+      const nextSem = preset.semester || prev.semester;
+      return {
+        ...prev,
+        subjectName: preset.name,
+        subjectCode: preset.code,
+        year: nextYear,
+        semester: nextSem,
+        ...(!editingExam && !titleManuallyEditedRef.current
+          ? { examName: buildDefaultExamTitle({ year: nextYear, semester: nextSem, examType: prev.examType }) }
+          : {}),
+      };
+    });
   };
 
   const applyExamToEditForm = (exam) => {
     setEditingExam(exam);
+    titleManuallyEditedRef.current = true;
     setFormError('');
     setConfirmControlledCorrection(false);
     setCorrectionReason('');
@@ -580,6 +603,7 @@ const Examinations = () => {
       semester: exam.semester || 'I Semester',
       subjectName: exam.subjectName || '',
       subjectCode: exam.subjectCode || '',
+      examType: resolveExamType(exam),
       examName: exam.examName || '',
       examDate: exam.examDate || getTodayKolkataIso(),
       startTime: formatTime12h(exam.startTime, '09:00 AM'),
@@ -631,6 +655,7 @@ const Examinations = () => {
   const openCreateModal = (opts = {}) => {
     const { fromUrl = false, prefillDate = '', prefillSession = '' } = opts || {};
     setEditingExam(null);
+    titleManuallyEditedRef.current = false;
     setFormError('');
     setClassroomOverrides({});
     setSelectedSections([]);
@@ -640,13 +665,17 @@ const Examinations = () => {
     const sess = prefillSession ? normalizeSessionCode(prefillSession, 'AM') : 'AM';
     const isAfternoon = sess === 'PM' || sess === 'AN';
     const defSubject = availableSubjects[0];
+    const defYear = defSubject?.year || 'III Year';
+    const defSem = defSubject?.semester || 'I Semester';
+    const defType = 'UNIT 1';
     setFormData({
       academicYear: '2026-2027',
-      year: defSubject?.year || 'III Year',
-      semester: defSubject?.semester || 'I Semester',
+      year: defYear,
+      semester: defSem,
       subjectName: defSubject?.subjectName || 'Automata Theory and Compiler Design',
       subjectCode: defSubject?.subjectCode || '20A05501T',
-      examName: 'III B.Tech I Semester Mid-Term Examination',
+      examType: defType,
+      examName: buildDefaultExamTitle({ year: defYear, semester: defSem, examType: defType }),
       examDate: prefillDate || getTodayKolkataIso(),
       startTime: isAfternoon ? '02:00 PM' : '09:00 AM',
       endTime: isAfternoon ? '05:00 PM' : '12:00 PM',
@@ -829,6 +858,9 @@ const Examinations = () => {
             savedExam,
             ...prev.filter((ex) => String(ex._id) !== String(savedExam._id)),
           ]);
+          if (savedExam.approvalStatus === 'PENDING_REVIEW') {
+            setPendingReviewCount((prev) => prev + 1);
+          }
           targetTab = activeTab === 'pending' ? 'pending' : 'all';
           if (activeTab !== targetTab) {
             skipNextTabEffectRef.current = true;
@@ -845,38 +877,12 @@ const Examinations = () => {
       setSubmitting(false);
     }
 
-    // Secondary GET refreshes run independently so a refresh failure never masquerades as a save failure
+    // Quietly synchronize list in the background without redundant dashboard/stats fetches or blocking spinners
     if (savedExam) {
-      const [listResult, pendingResult, statsResult] = await Promise.allSettled([
-        fetchExams(savedMode === 'create' ? targetTab : null, { preserveOnFailure: true }),
-        api.get('/exams?filter=pending'),
-        api.get('/dashboard/stats'),
-      ]);
-
-      const secondaryWarnings = [];
-      if (listResult.status === 'fulfilled' && listResult.value === false) {
-        secondaryWarnings.push('examination list');
-      } else if (listResult.status === 'rejected') {
-        secondaryWarnings.push('examination list');
-      }
-      if (
-        pendingResult.status === 'rejected' ||
-        (pendingResult.status === 'fulfilled' && !pendingResult.value?.data?.success)
-      ) {
-        secondaryWarnings.push('pending review queue');
-      }
-      if (
-        statsResult.status === 'rejected' ||
-        (statsResult.status === 'fulfilled' && !statsResult.value?.data?.success)
-      ) {
-        secondaryWarnings.push('dashboard statistics');
-      }
-
-      if (secondaryWarnings.length > 0 && !refreshWarning) {
-        setRefreshWarning(
-          `Examination was saved to MongoDB, but refreshing secondary data (${secondaryWarnings.join(', ')}) encountered a temporary issue. Click Refresh to reload.`
-        );
-      }
+      await fetchExams(savedMode === 'create' ? targetTab : null, {
+        preserveOnFailure: true,
+        background: true,
+      });
     }
   };
 
@@ -994,6 +1000,10 @@ const Examinations = () => {
   const filteredExams = useMemo(() => {
     let list = exams;
 
+    if (filterExamType && filterExamType !== 'ALL') {
+      list = list.filter((e) => resolveExamType(e) === filterExamType);
+    }
+
     if (selectedGroupView && selectedGroupView !== 'ALL') {
       list = list.filter((e) => {
         const grp = (e.group || '').toUpperCase();
@@ -1014,6 +1024,7 @@ const Examinations = () => {
       const subName = (e.subjectName || '').toLowerCase();
       const subCode = (e.subjectCode || '').toLowerCase();
       const examName = (e.examName || '').toLowerCase();
+      const examTypeStr = resolveExamType(e).toLowerCase();
       const secStr = (e.section || '').toLowerCase();
       const faculty = (e.facultyName || '').toLowerCase();
       const dateStr = (e.examDate || '').toLowerCase();
@@ -1023,13 +1034,14 @@ const Examinations = () => {
         subName.includes(term) ||
         subCode.includes(term) ||
         examName.includes(term) ||
+        examTypeStr.includes(term) ||
         secStr.includes(term) ||
         faculty.includes(term) ||
         dateStr.includes(term) ||
         yearStr.includes(term)
       );
     });
-  }, [exams, deferredSearchTerm, selectedGroupView]);
+  }, [exams, deferredSearchTerm, selectedGroupView, filterExamType]);
 
   // Filtered student list for inspection modal
   const filteredInspectStudents = useMemo(() => {
@@ -1144,7 +1156,7 @@ const Examinations = () => {
         <div className="flex flex-wrap gap-1 bg-slate-200/70 p-1 rounded-lg text-xs font-semibold">
           {[
             { id: 'all', label: 'All Examinations' },
-            { id: 'pending', label: 'Pending Admin Review' },
+            { id: 'pending', label: `Pending Admin Review${pendingReviewCount > 0 ? ` (${pendingReviewCount})` : ''}` },
             { id: 'upcoming', label: 'Upcoming' },
             { id: 'today', label: "Today's Exams" },
             { id: 'approved', label: 'Approved' },
@@ -1214,6 +1226,20 @@ const Examinations = () => {
               {semestersList.map((sem) => (
                 <option key={sem.value} value={sem.value}>
                   {sem.label}
+                </option>
+              ))}
+            </select>
+
+            <select
+              value={filterExamType}
+              onChange={(e) => setFilterExamType(e.target.value)}
+              aria-label="Filter by Examination Type"
+              className="px-2.5 py-1.5 text-xs font-semibold border border-slate-300 rounded-lg bg-white text-navy-800"
+            >
+              <option value="ALL">All Exam Types</option>
+              {EXAM_TYPE_OPTIONS.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
                 </option>
               ))}
             </select>
@@ -1292,6 +1318,9 @@ const Examinations = () => {
                         <span className="font-bold text-navy-800 text-sm">{exam.subjectName}</span>
                         <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-blue-50 text-primary border border-blue-200">
                           {exam.subjectCode}
+                        </span>
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                          {resolveExamType(exam)}
                         </span>
                         {isParent && (
                           <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200 flex items-center">
@@ -1817,7 +1846,16 @@ const Examinations = () => {
                     </label>
                     <select
                       value={formData.year}
-                      onChange={(e) => setFormData({ ...formData, year: e.target.value })}
+                      onChange={(e) => {
+                        const nextYear = e.target.value;
+                        setFormData((prev) => ({
+                          ...prev,
+                          year: nextYear,
+                          ...(!editingExam && !titleManuallyEditedRef.current
+                            ? { examName: buildDefaultExamTitle({ year: nextYear, semester: prev.semester, examType: prev.examType }) }
+                            : {}),
+                        }));
+                      }}
                       className="w-full px-3 py-2 text-xs font-medium border border-slate-300 rounded-lg bg-white"
                     >
                       {yearsList.map((y) => (
@@ -1834,7 +1872,16 @@ const Examinations = () => {
                     </label>
                     <select
                       value={formData.semester}
-                      onChange={(e) => setFormData({ ...formData, semester: e.target.value })}
+                      onChange={(e) => {
+                        const nextSem = e.target.value;
+                        setFormData((prev) => ({
+                          ...prev,
+                          semester: nextSem,
+                          ...(!editingExam && !titleManuallyEditedRef.current
+                            ? { examName: buildDefaultExamTitle({ year: prev.year, semester: nextSem, examType: prev.examType }) }
+                            : {}),
+                        }));
+                      }}
                       className="w-full px-3 py-2 text-xs font-medium border border-slate-300 rounded-lg bg-white"
                     >
                       {semestersList.map((s) => (
@@ -1857,14 +1904,20 @@ const Examinations = () => {
                       const code = e.target.value;
                       const match = availableSubjects.find((s) => s.subjectCode === code);
                       if (match) {
-                        setFormData((prev) => ({
-                          ...prev,
-                          subjectName: match.subjectName,
-                          subjectCode: match.subjectCode,
-                          year: match.year || prev.year,
-                          semester: match.semester || prev.semester,
-                          examName: `${match.year || prev.year} ${match.semester || prev.semester} Mid-Term Examination`,
-                        }));
+                        setFormData((prev) => {
+                          const nextYear = match.year || prev.year;
+                          const nextSem = match.semester || prev.semester;
+                          return {
+                            ...prev,
+                            subjectName: match.subjectName,
+                            subjectCode: match.subjectCode,
+                            year: nextYear,
+                            semester: nextSem,
+                            ...(!editingExam && !titleManuallyEditedRef.current
+                              ? { examName: buildDefaultExamTitle({ year: nextYear, semester: nextSem, examType: prev.examType }) }
+                              : {}),
+                          };
+                        });
                       } else {
                         setFormData((prev) => ({ ...prev, subjectCode: code }));
                       }
@@ -1919,18 +1972,49 @@ const Examinations = () => {
                   Step 2: Examination Title, Date & Timings
                 </div>
 
-                <div>
-                  <label className="block text-[11px] font-bold text-navy-800 mb-1">
-                    Examination Title: <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={formData.examName}
-                    onChange={(e) => setFormData({ ...formData, examName: e.target.value })}
-                    placeholder="e.g. III B.Tech I Semester Regular Examinations"
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg bg-white font-medium"
-                  />
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+                  <div className="sm:col-span-4">
+                    <label className="block text-[11px] font-bold text-navy-800 mb-1">
+                      Examination Type / Number: <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={formData.examType || 'UNIT 1'}
+                      onChange={(e) => {
+                        const nextType = e.target.value;
+                        setFormData((prev) => ({
+                          ...prev,
+                          examType: nextType,
+                          ...(!editingExam && !titleManuallyEditedRef.current
+                            ? { examName: buildDefaultExamTitle({ year: prev.year, semester: prev.semester, examType: nextType }) }
+                            : {}),
+                        }));
+                      }}
+                      className="w-full px-3 py-2 text-xs font-bold border border-slate-300 rounded-lg bg-white text-navy-800"
+                    >
+                      {EXAM_TYPE_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="sm:col-span-8">
+                    <label className="block text-[11px] font-bold text-navy-800 mb-1">
+                      Examination Title: <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={formData.examName}
+                      onChange={(e) => {
+                        titleManuallyEditedRef.current = true;
+                        setFormData((prev) => ({ ...prev, examName: e.target.value }));
+                      }}
+                      placeholder="e.g. III Year I Semester UNIT 1 Examination"
+                      className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg bg-white font-medium"
+                    />
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
@@ -2494,8 +2578,13 @@ const Examinations = () => {
           <div className="relative bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-2xl w-full max-h-[90vh] flex flex-col overflow-hidden">
             <div className="p-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
               <div>
-                <h3 className="text-sm font-bold text-navy-800">{detailExam.examName}</h3>
-                <p className="text-[11px] text-slate-500">
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-800">
+                    {resolveExamType(detailExam)}
+                  </span>
+                  <h3 className="text-sm font-bold text-navy-800">{detailExam.examName}</h3>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-0.5">
                   {detailExam.subjectName} ({detailExam.subjectCode}) • ID: {detailExam._id}
                 </p>
               </div>

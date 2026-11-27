@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import axios from 'axios';
 import api, { API_TIMEOUTS } from '../../services/api';
 import { formatExamTimeRange, computeStudentAccessInfo, formatTime12h, formatSessionLabel } from '../../utils/dateTime';
+import { resolveExamType } from '../../utils/examType';
 import {
   Search,
   CheckCircle2,
@@ -450,7 +451,7 @@ const StudentSeatFinder = () => {
                           <option value="">-- Choose Today&apos;s Subject / Examination --</option>
                           {activeExams.map((ex) => (
                             <option key={ex._id} value={ex._id}>
-                              {ex.examName ? `${ex.examName} — ` : ''}{ex.subjectName} ({ex.subjectCode}) • {formatExamTimeRange(ex)} IST • {formatSessionLabel(ex.session, ex.startTime)} • Sec {ex.section}
+                              [{resolveExamType(ex)}] {ex.examName ? `${ex.examName} — ` : ''}{ex.subjectName} ({ex.subjectCode}) • {formatExamTimeRange(ex)} IST • {formatSessionLabel(ex.session, ex.startTime)} • Sec {ex.section}
                             </option>
                           ))}
                         </select>
@@ -461,8 +462,13 @@ const StudentSeatFinder = () => {
                     {currentExam && (
                       <div className="w-full min-w-0 p-3.5 bg-slate-50 border border-slate-200 rounded-lg flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2.5 text-xs">
                         <div className="space-y-1 min-w-0">
-                          <div className="text-[11px] font-bold uppercase tracking-wider text-primary break-words">
-                            {currentExam.examName || "Today's Scheduled Examination"}
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-800 text-[10px] font-bold">
+                              {resolveExamType(currentExam)}
+                            </span>
+                            <span className="text-[11px] font-bold uppercase tracking-wider text-primary break-words">
+                              {currentExam.examName || "Today's Scheduled Examination"}
+                            </span>
                           </div>
                           <div className="font-bold text-navy-800 text-sm break-words">
                             {currentExam.subjectName} ({currentExam.subjectCode})
@@ -660,11 +666,16 @@ const StudentSeatFinder = () => {
                 </div>
                 <div>
                   <span className="text-slate-600 block text-[11px] font-medium">Examination / Subject</span>
-                  <span className="font-semibold text-navy-800">
-                    {result.subjectName} ({result.subjectCode})
-                  </span>
+                  <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                    <span className="px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-800 text-[10px] font-bold">
+                      {resolveExamType(result)}
+                    </span>
+                    <span className="font-semibold text-navy-800">
+                      {result.subjectName} ({result.subjectCode})
+                    </span>
+                  </div>
                   <span className="text-[11px] text-slate-600 block mt-0.5">
-                    {result.academicYear} • {result.semester}
+                    {result.examName ? `${result.examName} • ` : ''}{result.academicYear} • {result.semester}
                   </span>
                 </div>
                 <div>

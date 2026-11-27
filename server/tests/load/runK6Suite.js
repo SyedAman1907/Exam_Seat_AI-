@@ -17,7 +17,13 @@ async function main() {
   }
 
   const childProc = fork(WORKER_SCRIPT, ['--server-worker'], {
-    env: process.env,
+    env: {
+      ...process.env,
+      // Allow multi-stage sustained k6 loops over 500 synthetic roll numbers from loopback 127.0.0.1
+      // without colliding with production's per-roll (30/min) or per-IP (30k/min) anti-scrape ceilings.
+      STUDENT_LOOKUP_PER_ROLL_LIMIT: process.env.STUDENT_LOOKUP_PER_ROLL_LIMIT || '1000',
+      STUDENT_PORTAL_BURST_LIMIT: process.env.STUDENT_PORTAL_BURST_LIMIT || '250000',
+    },
     stdio: ['inherit', 'inherit', 'inherit', 'ipc'],
   });
 

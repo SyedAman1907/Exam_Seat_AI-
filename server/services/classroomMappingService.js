@@ -5,6 +5,7 @@ const {
   parseExamDateRange,
   formatTime12h,
   isSameSessionPolarity,
+  formatIsoDateKolkata,
 } = require('../utils/dateTimeUtils');
 
 /**
@@ -113,8 +114,7 @@ const classroomMappingService = {
             exam.startDateTime &&
               exam.endDateTime &&
               new Date(exam.endDateTime).getTime() > new Date(exam.startDateTime).getTime() &&
-              new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date(exam.endDateTime)) >
-                normalizeDateStr(exam.examDate)
+              formatIsoDateKolkata(new Date(exam.endDateTime)) > normalizeDateStr(exam.examDate)
           );
         return parseExamDateRange(exam.examDate, exam.startTime, exam.endTime, null, {
           allowOvernight: storedOvernight,
@@ -128,7 +128,7 @@ const classroomMappingService = {
       const endDT = new Date(exam.endDateTime);
       if (!isNaN(startDT.getTime()) && !isNaN(endDT.getTime()) && startDT < endDT) {
         return {
-          examDate: normalizeDateStr(exam.examDate) || new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(startDT),
+          examDate: normalizeDateStr(exam.examDate) || formatIsoDateKolkata(startDT),
           startTime: formatTime12h(exam.startTime || startDT),
           endTime: formatTime12h(exam.endTime || endDT),
           startDateTime: startDT,
@@ -161,12 +161,7 @@ const classroomMappingService = {
 
     const normTargetDate = normalizeDateStr(examDate);
     const prevDayDt = new Date(startDateTime.getTime() - 24 * 60 * 60 * 1000);
-    const prevDayIso = new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Asia/Kolkata',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).format(prevDayDt);
+    const prevDayIso = formatIsoDateKolkata(prevDayDt);
 
     const query = {
       isDeleted: { $ne: true },

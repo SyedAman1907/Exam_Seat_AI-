@@ -39,6 +39,15 @@ function isBinaryResponseType(responseType) {
   return responseType === 'blob' || responseType === 'arraybuffer';
 }
 
+function generateRequestId() {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+  } catch {}
+  return `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export function safeParseJsonPayload(rawData) {
   if (rawData === null || rawData === undefined) {
     return null;
@@ -51,14 +60,19 @@ export function safeParseJsonPayload(rawData) {
 
   if (typeof rawData === 'string') {
     const trimmed = rawData.trim();
-    if (!trimmed) {
+    // Never treat empty strings, literal "null", or double-encoded "\"null\"" as JSON objects
+    if (!trimmed || trimmed === 'null' || trimmed === '"null"' || trimmed === 'undefined') {
       return null;
     }
 
     // Parse valid JSON strictly once; preserve actual types (null, object, array, primitive)
     // and return raw string untouched if invalid/non-JSON (e.g. HTML gateway error page).
     try {
-      return JSON.parse(trimmed);
+      const parsed = JSON.parse(trimmed);
+      if (parsed === 'null' || parsed === undefined) {
+        return null;
+      }
+      return parsed;
     } catch {
       return rawData;
     }
@@ -106,9 +120,13 @@ export function formatApiError(err, fallbackMessage = 'Request failed. Please tr
   return fallbackMessage;
 }
 
-// Attach JWT token to requests if available
+// Attach correlation request ID & JWT token to requests
 api.interceptors.request.use(
   (config) => {
+    const reqId = config.headers?.['X-Request-Id'] || generateRequestId();
+    config.headers['X-Request-Id'] = reqId;
+    config.__requestId = reqId;
+
     const token = localStorage.getItem('examseat_token');
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
@@ -122,6 +140,16 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
+function logSafeApiDiagnostic({ requestId, method, url, status, reason }) {
+  console.error('[API Diagnostics]', {
+    requestId: requestId || 'unknown',
+    method: String(method || 'GET').toUpperCase(),
+    endpoint: String(url || '').split('?')[0] || 'unknown',
+    status: status || 0,
+    reason: reason || 'Request failed',
+  });
+}
+
 // Intercept invalid JSON payloads, transient GET/HEAD failures, & 401 session expiry
 api.interceptors.response.use(
   (response) => {
@@ -129,14 +157,24 @@ api.interceptors.response.use(
       return response;
     }
 
+    const requestId =
+      response.headers?.['x-request-id'] || response.config?.__requestId || response.data?.requestId;
+
     const isSuccessStatus = response.status >= 200 && response.status < 300;
     if (!isSuccessStatus) {
       const errMsg =
         (response.data && typeof response.data === 'object' && response.data.message) ||
         `Request failed with HTTP status ${response.status}.`;
-      return Promise.reject(
-        new axios.AxiosError(errMsg, 'ERR_BAD_RESPONSE', response.config, response.request, response)
-      );
+      logSafeApiDiagnostic({
+        requestId,
+        method: response.config?.method,
+        url: response.config?.url,
+        status: response.status,
+        reason: errMsg,
+      });
+      const badErr = new axios.AxiosError(errMsg, 'ERR_BAD_RESPONSE', response.config, response.request, response);
+      badErr.requestId = requestId;
+      return Promise.reject(badErr);
     }
 
     // HTTP 204 No Content legitimately has an empty/null body
@@ -154,6 +192,14 @@ api.interceptors.response.use(
             ? 'Server returned an HTML response instead of JSON.'
             : 'Server returned an invalid or non-object JSON response.';
 
+      logSafeApiDiagnostic({
+        requestId,
+        method: response.config?.method,
+        url: response.config?.url,
+        status: response.status,
+        reason: reasonMsg,
+      });
+
       const invalidErr = new axios.AxiosError(
         reasonMsg,
         'ERR_INVALID_JSON_RESPONSE',
@@ -162,6 +208,7 @@ api.interceptors.response.use(
         response
       );
       invalidErr.isInvalidJsonResponse = true;
+      invalidErr.requestId = requestId;
       return Promise.reject(invalidErr);
     }
 
@@ -177,6 +224,12 @@ api.interceptors.response.use(
       config.signal?.aborted;
 
     const status = error.response?.status;
+    const requestId =
+      error.response?.headers?.['x-request-id'] ||
+      error.response?.data?.requestId ||
+      config.__requestId;
+    error.requestId = requestId;
+
     if (error.response && !isBinaryResponseType(config.responseType)) {
       const rawErrData = error.response.data;
       if (rawErrData === null || typeof rawErrData !== 'object') {
@@ -192,6 +245,16 @@ api.interceptors.response.use(
         error.isInvalidJsonResponse = true;
         error.message = fallbackErrMsg;
       }
+    }
+
+    if (!isCanceled && (status >= 500 || error.isInvalidJsonResponse || !error.response)) {
+      logSafeApiDiagnostic({
+        requestId,
+        method,
+        url: config.url,
+        status,
+        reason: error.response?.data?.message || error.message,
+      });
     }
 
     const isTransient =

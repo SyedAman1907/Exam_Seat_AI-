@@ -38,6 +38,11 @@ import {
   formatSessionLabel,
   toMinutesFromMidnight,
 } from '../../utils/dateTime';
+import {
+  EXAM_TYPE_OPTIONS,
+  buildDefaultExamTitle,
+  resolveExamType,
+} from '../../utils/examType';
 import TimeSelect12h from '../../components/TimeSelect12h';
 
 const FacultyPortal = () => {
@@ -81,13 +86,15 @@ const FacultyPortal = () => {
     semester: 'I Semester',
     subjectName: '',
     subjectCode: '',
-    examName: 'Mid-Term Examination I',
+    examType: 'UNIT 1',
+    examName: buildDefaultExamTitle({ year: 'III Year', semester: 'I Semester', examType: 'UNIT 1' }),
     examDate: getTodayKolkataIso(),
     startTime: '09:00 AM',
     endTime: '12:00 PM',
     session: 'AM',
     group: 'ALL',
   });
+  const [examTypeFilter, setExamTypeFilter] = useState('ALL');
   const [selectedSections, setSelectedSections] = useState([]);
   const [creatingExam, setCreatingExam] = useState(false);
   const [examFormError, setExamFormError] = useState('');
@@ -319,14 +326,18 @@ const FacultyPortal = () => {
     const targetSub = subjectItem || (subjects.length > 0 ? subjects[0] : null);
     const defaultSubName = targetSub?.subjectName || '';
     const defaultSections = getSectionsForSubjectGroup(defaultSubName, 'ALL').map((s) => s.section);
+    const defYear = targetSub?.year || 'III Year';
+    const defSem = targetSub?.semester || 'I Semester';
+    const defType = 'UNIT 1';
     setEditingExam(null);
     setExamForm({
       academicYear: targetSub?.academicYear || '2026-2027',
-      year: targetSub?.year || 'III Year',
-      semester: targetSub?.semester || 'I Semester',
+      year: defYear,
+      semester: defSem,
       subjectName: defaultSubName,
       subjectCode: targetSub?.subjectCode || '',
-      examName: targetSub ? `Mid-Term Examination I - ${targetSub.subjectName}` : 'Mid-Term Examination I',
+      examType: defType,
+      examName: buildDefaultExamTitle({ year: defYear, semester: defSem, examType: defType }),
       examDate: getTodayKolkataIso(),
       startTime: '09:00 AM',
       endTime: '12:00 PM',
@@ -357,6 +368,7 @@ const FacultyPortal = () => {
       semester: exam.semester || 'I Semester',
       subjectName: exam.subjectName || '',
       subjectCode: exam.subjectCode || '',
+      examType: resolveExamType(exam),
       examName: exam.examName || '',
       examDate: exam.examDate || getTodayKolkataIso(),
       startTime: formatTime12h(exam.startTime, isPM ? '02:00 PM' : '09:00 AM'),
@@ -442,6 +454,7 @@ const FacultyPortal = () => {
       setCreatingExam(true);
       const payload = {
         examName: examForm.examName.trim(),
+        examType: examForm.examType || 'UNIT 1',
         subjectName: examForm.subjectName,
         subjectCode: examForm.subjectCode,
         academicYear: examForm.academicYear,
@@ -600,30 +613,34 @@ const FacultyPortal = () => {
 
   // Filtered Faculty Examinations list for Management Table
   const filteredFacultyExams = useMemo(() => {
-    if (examTabFilter === 'ALL') return facultyExams;
+    let base = facultyExams;
+    if (examTypeFilter && examTypeFilter !== 'ALL') {
+      base = base.filter((ex) => resolveExamType(ex) === examTypeFilter);
+    }
+    if (examTabFilter === 'ALL') return base;
     if (examTabFilter === 'MINE') {
-      return facultyExams.filter(
+      return base.filter(
         (ex) => ex.isOwner || (user?._id && ex.createdBy === user._id)
       );
     }
     if (examTabFilter === 'DRAFT') {
-      return facultyExams.filter((ex) => ex.approvalStatus === 'DRAFT' || ex.status === 'DRAFT');
+      return base.filter((ex) => ex.approvalStatus === 'DRAFT' || ex.status === 'DRAFT');
     }
     if (examTabFilter === 'PENDING_REVIEW') {
-      return facultyExams.filter(
+      return base.filter(
         (ex) => ex.approvalStatus === 'PENDING_REVIEW' && ex.status !== 'COMPLETED'
       );
     }
     if (examTabFilter === 'PUBLISHED') {
-      return facultyExams.filter(
+      return base.filter(
         (ex) => ex.status === 'PUBLISHED' || ex.visibilityStatus === 'PUBLISHED'
       );
     }
     if (examTabFilter === 'COMPLETED') {
-      return facultyExams.filter((ex) => ex.status === 'COMPLETED');
+      return base.filter((ex) => ex.status === 'COMPLETED');
     }
-    return facultyExams;
-  }, [facultyExams, examTabFilter, user]);
+    return base;
+  }, [facultyExams, examTabFilter, examTypeFilter, user]);
 
   return (
     <div className="space-y-6">
@@ -1430,7 +1447,33 @@ const FacultyPortal = () => {
                   Step 2: Examination Title, Date & Asia/Kolkata Timings
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-bold text-navy-800 mb-1">
+                      Examination Type: <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={examForm.examType || 'UNIT 1'}
+                      onChange={(e) => {
+                        const nextType = e.target.value;
+                        setExamForm((prev) => ({
+                          ...prev,
+                          examType: nextType,
+                          ...(!editingExam
+                            ? { examName: buildDefaultExamTitle({ year: prev.year, semester: prev.semester, examType: nextType }) }
+                            : {}),
+                        }));
+                      }}
+                      className="w-full px-3 py-2 text-xs font-bold border border-slate-300 rounded-lg bg-white text-navy-800"
+                    >
+                      {EXAM_TYPE_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
                   <div>
                     <label className="block text-[11px] font-bold text-navy-800 mb-1">
                       Examination Title: <span className="text-red-500">*</span>
@@ -1607,7 +1650,21 @@ const FacultyPortal = () => {
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-1.5 bg-slate-100 p-1 rounded-lg text-[11px] font-semibold">
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={examTypeFilter}
+              onChange={(e) => setExamTypeFilter(e.target.value)}
+              aria-label="Filter Faculty Exams by Examination Type"
+              className="px-2.5 py-1.5 text-[11px] font-bold border border-slate-300 rounded-lg bg-white text-navy-800"
+            >
+              <option value="ALL">All Types</option>
+              {EXAM_TYPE_OPTIONS.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+            <div className="flex flex-wrap items-center gap-1.5 bg-slate-100 p-1 rounded-lg text-[11px] font-semibold">
             {[
               { id: 'ALL', label: `All (${facultyExams.length})` },
               { id: 'MINE', label: 'My Created' },
@@ -1629,6 +1686,7 @@ const FacultyPortal = () => {
                 {tab.label}
               </button>
             ))}
+            </div>
           </div>
         </div>
 
@@ -1676,7 +1734,12 @@ const FacultyPortal = () => {
                 {filteredFacultyExams.map((exam) => (
                   <tr key={exam._id} className="hover:bg-slate-50/80 transition-colors">
                     <td className="py-3 px-3">
-                      <div className="font-bold text-navy-800">{exam.examName}</div>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                          {resolveExamType(exam)}
+                        </span>
+                        <span className="font-bold text-navy-800">{exam.examName}</span>
+                      </div>
                       <div className="text-[10px] text-slate-500 mt-0.5">
                         {exam.academicYear || '2026-2027'} • {exam.studentCount || 0} Students
                       </div>
@@ -1838,8 +1901,13 @@ const FacultyPortal = () => {
           <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-2xl overflow-hidden max-h-[90vh] flex flex-col">
             <div className="p-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
               <div>
-                <h3 className="text-sm font-bold text-navy-800">{examDetailModal.examName}</h3>
-                <p className="text-[11px] text-slate-500">
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-800">
+                    {resolveExamType(examDetailModal)}
+                  </span>
+                  <h3 className="text-sm font-bold text-navy-800">{examDetailModal.examName}</h3>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-0.5">
                   {examDetailModal.subjectName} ({examDetailModal.subjectCode}) • {examDetailModal.academicYear}
                 </p>
               </div>

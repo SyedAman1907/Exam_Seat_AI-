@@ -47,8 +47,17 @@ function buildOptions() {
   if (STAGE_VUS > 0) {
     return {
       summaryTrendStats: commonStats,
-      vus: STAGE_VUS,
-      duration: STAGE_DURATION,
+      scenarios: {
+        sustained_concurrency: {
+          executor: 'ramping-vus',
+          startVUs: Math.min(25, STAGE_VUS),
+          stages: [
+            { duration: '2s', target: STAGE_VUS },
+            { duration: STAGE_DURATION, target: STAGE_VUS },
+          ],
+          gracefulRampDown: '2s',
+        },
+      },
       thresholds: {
         http_req_failed: ['rate<0.02'],
         http_req_duration: ['p(95)<1500', 'p(99)<3000'],

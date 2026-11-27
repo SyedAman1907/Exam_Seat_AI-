@@ -547,7 +547,7 @@ const Allocations = () => {
                 </span>
               </div>
               <p className="text-xs text-slate-500 mt-1">
-                {exam?.subjectName} ({exam?.subjectCode}) • {formatSessionLabel(exam?.session, exam?.startTime)} ({formatExamTimeRange(exam)}) • {sectionList.length} Section(s) ({sectionList.map((s) => s.section).join(', ')}) • {classroomList.length} Classroom(s)
+                {exam?.examType ? `${exam.examType} • ` : ''}{exam?.subjectName} ({exam?.subjectCode}) • {formatSessionLabel(exam?.session, exam?.startTime)} ({formatExamTimeRange(exam)}) • {sectionList.length} Section(s) ({sectionList.map((s) => s.section).join(', ')}) • {classroomList.length} Classroom(s)
               </p>
             </div>
 

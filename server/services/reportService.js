@@ -4,6 +4,7 @@ const path = require('path');
 const archiver = require('archiver');
 const ReportTemplates = require('../templates/reportTemplates');
 const { formatExamTimeRange, normalizeDateStr, formatSessionLabel } = require('../utils/dateTimeUtils');
+const { resolveExamType } = require('../utils/examTypeUtils');
 
 const LOGO_PATH = path.join(__dirname, '../assets/rgmcet-logo.jpg');
 const DEPT_LOGO_PATH = path.join(__dirname, '../assets/dept-logo-1.png');
@@ -280,6 +281,7 @@ class ReportService {
         // Custom exam context tailored for this section and faculty
         const sectionExamContext = {
           examName: exam.examName,
+          examType: resolveExamType(exam),
           academicYear: exam.academicYear,
           year: exam.year,
           semester: exam.semester,
@@ -511,7 +513,7 @@ class ReportService {
         doc.fillColor('#334155').fontSize(8).font('Times-Roman');
         doc.text(`Subject: ${exam.subjectName} (${exam.subjectCode})`, 40, 78, { lineBreak: false });
         doc.text(`Date & Time: ${normalizeDateStr(exam.examDate) || exam.examDate} (${formatExamTimeRange(exam)})`, 40, 91, { lineBreak: false });
-        doc.text(`Exam: ${exam.examName} | Session: ${formatSessionLabel(exam.session, exam.startTime)} | Sec: ${exam.section || 'A1'}`, 310, 78, { width: 280, lineBreak: false, ellipsis: true });
+        doc.text(`Exam: ${exam.examName} [${resolveExamType(exam)}] | Session: ${formatSessionLabel(exam.session, exam.startTime)} | Sec: ${exam.section || 'A1'}`, 310, 78, { width: 280, lineBreak: false, ellipsis: true });
         doc.text(`Classroom: ${classroom.name || 'ET BLOCK 3020'} (${classroom.roomNumber || '3020'})`, 310, 91, { lineBreak: false });
         doc.text(`Total Candidates: ${allocation.students.length}`, 600, 78, { lineBreak: false });
         doc.text(`Sets: A (${allocation.setDistribution.A}) | B (${allocation.setDistribution.B}) | C (${allocation.setDistribution.C})`, 600, 91, { lineBreak: false });

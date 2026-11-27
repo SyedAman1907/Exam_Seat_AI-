@@ -21,16 +21,9 @@ const {
   getEffectiveNow,
   getTodayKolkataDate,
   isExamConcluded,
+  formatIsoDateKolkata,
 } = require('../utils/dateTimeUtils');
-
-function formatIsoDateKolkata(dt) {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Kolkata',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(dt);
-}
+const { resolveExamType } = require('../utils/examTypeUtils');
 
 /**
  * Authoritatively resolves an examination's Asia/Kolkata timestamps from stored examDate + startTime/endTime.
@@ -163,7 +156,7 @@ exports.getActiveExams = async (req, res) => {
           examDate: { $in: [iso, dmy, tomorrowIso, tomorrowDmy] },
         })
           .select(
-            'examName subjectName subjectCode examDate startTime endTime startDateTime endDateTime allowOvernight session department section sections group academicYear studentCount approvalStatus visibilityStatus status'
+            'examName examType subjectName subjectCode examDate startTime endTime startDateTime endDateTime allowOvernight session department section sections group academicYear studentCount approvalStatus visibilityStatus status'
           )
           .sort({ startDateTime: 1, startTime: 1, session: 1, section: 1 })
           .lean(),
@@ -235,6 +228,7 @@ exports.getActiveExams = async (req, res) => {
       }
 
       const rawObj = { ...ex };
+      rawObj.examType = resolveExamType(rawObj);
       try {
         rawObj.startTime = formatTime12h(rawObj.startTime || startDateTime);
       } catch {
@@ -370,7 +364,7 @@ exports.lookupSeat = async (req, res) => {
     }
 
     const baseExamFields =
-      'examName subjectName subjectCode examDate startTime endTime startDateTime endDateTime allowOvernight session department section group academicYear facultyName status approvalStatus visibilityStatus sectionAllocations.section sectionAllocations.group sectionAllocations.roomNumber sectionAllocations.classroomName sectionAllocations.facultyName';
+      'examName examType subjectName subjectCode examDate startTime endTime startDateTime endDateTime allowOvernight session department section group academicYear facultyName status approvalStatus visibilityStatus sectionAllocations.section sectionAllocations.group sectionAllocations.roomNumber sectionAllocations.classroomName sectionAllocations.facultyName';
 
     const cacheKey = examId ? `lookup:${iso}:${examId}` : `lookup:${iso}:all`;
     const candidateExams = await portalCache.getScheduleCandidates(
@@ -629,6 +623,7 @@ exports.lookupSeat = async (req, res) => {
         subjectName: targetExam.subjectName,
         subjectCode: targetExam.subjectCode,
         examName: targetExam.examName,
+        examType: resolveExamType(targetExam),
         academicYear: targetExam.academicYear || '2026-2027',
         semester: targetExam.semester || 'I Semester',
         group: inferredGroup,

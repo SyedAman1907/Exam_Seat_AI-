@@ -1,5 +1,6 @@
 const ExcelJS = require('exceljs');
-const { formatExamTimeRange, normalizeDateStr, formatSessionLabel } = require('../utils/dateTimeUtils');
+const { formatExamTimeRange, normalizeDateStr, formatSessionLabel, getTodayKolkataDate } = require('../utils/dateTimeUtils');
+const { resolveExamType } = require('../utils/examTypeUtils');
 
 class ExcelService {
   /**
@@ -33,7 +34,7 @@ class ExcelService {
 
     sheet.mergeCells('A3:M3');
     const metaCell = sheet.getCell('A3');
-    metaCell.value = `Total Records: ${students.length} | Export Date: ${new Date().toLocaleDateString('en-GB')} | RGMCET Autonomous Examination System`;
+    metaCell.value = `Total Records: ${students.length} | Export Date: ${getTodayKolkataDate().dmy} IST | RGMCET Autonomous Examination System`;
     metaCell.font = { name: 'Calibri', size: 9, italic: true, color: { argb: 'FF475569' } };
     metaCell.alignment = { horizontal: 'center', vertical: 'middle' };
     sheet.getRow(3).height = 18;
@@ -183,7 +184,7 @@ class ExcelService {
     // Subtitle Row
     sheet.mergeCells('A2:K2');
     const subCell = sheet.getCell('A2');
-    subCell.value = `EXAMINATION SEATING ALLOCATION REPORT — ${exam.examName.toUpperCase()} [${exam.group || 'Group A'}] ${setFilter ? `(${setFilter.toUpperCase()})` : ''}`;
+    subCell.value = `EXAMINATION SEATING ALLOCATION REPORT — ${exam.examName.toUpperCase()} [${resolveExamType(exam)}] [${exam.group || 'Group A'}] ${setFilter ? `(${setFilter.toUpperCase()})` : ''}`;
     subCell.font = { name: 'Calibri', size: 10.5, bold: true, color: { argb: 'FF2563EB' } };
     subCell.alignment = { horizontal: 'center', vertical: 'middle' };
     sheet.getRow(2).height = 20;
@@ -198,7 +199,7 @@ class ExcelService {
 
     sheet.mergeCells('A4:K4');
     const metaCell2 = sheet.getCell('A4');
-    metaCell2.value = `Group: ${exam.group || 'Group A'} | Total Candidates: ${students.length} | Generated: ${new Date().toLocaleDateString('en-GB')}`;
+    metaCell2.value = `Group: ${exam.group || 'Group A'} | Total Candidates: ${students.length} | Generated: ${getTodayKolkataDate().dmy} IST`;
     metaCell2.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF475569' } };
     metaCell2.alignment = { horizontal: 'center', vertical: 'middle' };
     sheet.getRow(4).height = 16;

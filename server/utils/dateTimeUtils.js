@@ -9,6 +9,12 @@ const KOLKATA_DATE_FORMATTER = new Intl.DateTimeFormat('en-CA', {
   day: '2-digit',
 });
 
+function formatIsoDateKolkata(dt = new Date()) {
+  const parsed = dt instanceof Date ? dt : new Date(dt);
+  if (isNaN(parsed.getTime())) return KOLKATA_DATE_FORMATTER.format(new Date());
+  return KOLKATA_DATE_FORMATTER.format(parsed);
+}
+
 /**
  * Current instant (reference helper)
  */
@@ -363,6 +369,7 @@ function getTodayKolkataDate(customDate) {
 
 module.exports = {
   getKolkataNow,
+  formatIsoDateKolkata,
   normalizeDateStr,
   addDaysToIsoDate,
   to24HourTime,

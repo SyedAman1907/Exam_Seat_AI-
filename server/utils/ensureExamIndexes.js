@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { inferExamTypeFromTitle } = require('./examTypeUtils');
 
 /**
  * Idempotently ensures examination indexes and data consistency on server startup.
@@ -57,6 +58,28 @@ async function ensureExamIndexes() {
       { $set: { group: 'Group A' } }
     );
 
+    // Non-destructive historical backfill for examType (preserves titles, dates, allocations)
+    const missingTypeDocs = await examsCollection
+      .find(
+        {
+          $or: [{ examType: { $exists: false } }, { examType: null }, { examType: '' }],
+        },
+        { projection: { _id: 1, examName: 1 } }
+      )
+      .toArray();
+    if (missingTypeDocs.length > 0) {
+      await examsCollection.bulkWrite(
+        missingTypeDocs.map((doc) => ({
+          updateOne: {
+            filter: { _id: doc._id },
+            update: { $set: { examType: inferExamTypeFromTitle(doc.examName) } },
+          },
+        })),
+        { ordered: false }
+      );
+      console.log(`[Database Migration] Backfilled examType on ${missingTypeDocs.length} historical exam record(s).`);
+    }
+
     // 2. Drop obsolete session-wide unique indexes if present (they ignored startTime/endTime)
     const existingIndexes = await examsCollection.indexes();
     const obsoleteIndexes = [
@@ -98,6 +121,15 @@ async function ensureExamIndexes() {
         }
       );
       console.log('[Database Migration] Created time-aware lookup index "exam_schedule_lookup_idx".');
+    }
+
+    const hasTypeIndex = existingIndexes.some((idx) => idx.name === 'exam_type_date_idx');
+    if (!hasTypeIndex) {
+      await examsCollection.createIndex(
+        { isDeleted: 1, examType: 1, examDate: 1 },
+        { name: 'exam_type_date_idx', background: true }
+      );
+      console.log('[Database Migration] Created exam type index "exam_type_date_idx".');
     }
   } catch (err) {
     console.error('[Database Migration Error in ensureExamIndexes]:', err.message);

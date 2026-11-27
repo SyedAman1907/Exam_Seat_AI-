@@ -33,6 +33,7 @@ const {
   getTodayKolkataDate,
   getEffectiveNow,
 } = require('../utils/dateTimeUtils');
+const { normalizeExamType, resolveExamType } = require('../utils/examTypeUtils');
 
 async function runWithOptionalTransaction(workFn) {
   let session = null;
@@ -70,6 +71,7 @@ function attachExamPermissions(obj, user) {
   if (!obj) return obj;
   if (obj.startTime) obj.startTime = formatTime12h(obj.startTime, obj.startTime);
   if (obj.endTime) obj.endTime = formatTime12h(obj.endTime, obj.endTime);
+  obj.examType = resolveExamType(obj);
   obj.formattedTimeRange = formatExamTimeRange(obj);
   obj.sessionLabel = formatSessionLabel(obj.session, obj.startTime);
   if (!user) return obj;
@@ -107,7 +109,7 @@ function attachExamPermissions(obj, user) {
 // @access  Private
 exports.getExams = async (req, res) => {
   try {
-    const { filter, academicYear, department, year, semester, section, status, scope } = req.query;
+    const { filter, academicYear, department, year, semester, section, status, scope, examType } = req.query;
     const effectiveNow = getEffectiveNow(req);
     const normFilter = (filter || 'all').toLowerCase();
 
@@ -126,6 +128,7 @@ exports.getExams = async (req, res) => {
     if (semester && semester !== 'ALL') query.semester = semester;
     if (section && section !== 'ALL') query.section = section.toUpperCase();
     if (status && status !== 'ALL') query.status = status;
+    if (examType && examType !== 'ALL') query.examType = normalizeExamType(examType);
 
     // Faculty isolation: if logged in as faculty, show only their created or assigned examinations
     if (req.user && req.user.role === 'faculty') {
@@ -283,10 +286,21 @@ exports.getExams = async (req, res) => {
       };
     }
 
+    const pendingBaseQuery = {
+      isDeleted: { $ne: true },
+      approvalStatus: 'PENDING_REVIEW',
+      status: { $nin: ['COMPLETED', 'CANCELLED'] },
+      ...(andClauses.length > 0 ? { $and: andClauses } : {}),
+    };
+    const pendingReviewCount = await Exam.countDocuments(pendingBaseQuery);
+
     res.status(200).json({
       success: true,
       count: responseRows.length,
       total,
+      counts: {
+        pendingReview: pendingReviewCount,
+      },
       ...(paginationMeta && {
         page: paginationMeta.page,
         limit: paginationMeta.limit,
@@ -392,6 +406,7 @@ exports.createExam = async (req, res) => {
   try {
     const {
       examName,
+      examType,
       academicYear,
       department,
       year,
@@ -625,6 +640,7 @@ exports.createExam = async (req, res) => {
 
     const exam = new Exam({
       examName: examName.trim(),
+      examType: normalizeExamType(examType, examName),
       academicYear: academicYear || '2026-2027',
       department: department || 'Computer Science and Engineering',
       year: year || 'IV Year',
@@ -1100,6 +1116,7 @@ exports.updateExam = async (req, res) => {
 
     const {
       examName,
+      examType,
       academicYear,
       department,
       year,
@@ -1162,6 +1179,9 @@ exports.updateExam = async (req, res) => {
         return res.status(400).json({ success: false, message: 'Examination title cannot be empty.' });
       }
       exam.examName = String(examName).trim();
+    }
+    if (examType !== undefined) {
+      exam.examType = normalizeExamType(examType, exam.examName);
     }
     if (academicYear !== undefined) exam.academicYear = academicYear;
     if (department !== undefined) exam.department = department;
@@ -2486,6 +2506,7 @@ exports.createCentralizedExam = async (req, res) => {
   try {
     const {
       examName,
+      examType,
       academicYear,
       department,
       year,
@@ -2703,6 +2724,7 @@ exports.createCentralizedExam = async (req, res) => {
 
     const parentExam = new Exam({
       examName: examName.trim(),
+      examType: normalizeExamType(examType, examName),
       academicYear: examAcademicYear,
       department: department || 'Computer Science and Engineering',
       year: examYear,

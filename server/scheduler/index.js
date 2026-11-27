@@ -6,7 +6,7 @@ const AuditLog = require('../models/AuditLog');
 const SchedulerLock = require('../models/SchedulerLock');
 const portalCache = require('../services/portalCache');
 const { isDbConnectivityError } = require('../config/db');
-const { parseKolkataDateTime, parseExamDateRange, formatExamTimeRange } = require('../utils/dateTimeUtils');
+const { parseKolkataDateTime, parseExamDateRange, formatExamTimeRange, formatIsoDateKolkata } = require('../utils/dateTimeUtils');
 
 const INSTANCE_OWNER_ID = `${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
 
@@ -170,8 +170,7 @@ class PublicationScheduler {
                   exam.startDateTime &&
                     exam.endDateTime &&
                     new Date(exam.endDateTime).getTime() > new Date(exam.startDateTime).getTime() &&
-                    new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date(exam.endDateTime)) >
-                      exam.examDate
+                    formatIsoDateKolkata(new Date(exam.endDateTime)) > exam.examDate
                 );
               const range = parseExamDateRange(exam.examDate, exam.startTime, exam.endTime, null, {
                 allowOvernight: storedOvernight,

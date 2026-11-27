@@ -1,6 +1,7 @@
 const express = require('express');
 const rawCors = require('cors');
 const cors = typeof rawCors === 'function' ? rawCors : (rawCors?.default || rawCors);
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 if (!process.env.MONGODB_URI) {
@@ -25,6 +26,17 @@ const app = express();
 
 // Trust Render / reverse-proxy headers (required by express-rate-limit v7 in production)
 app.set('trust proxy', 1);
+
+// Attach a unique correlation Request ID to every request/response for safe diagnostics
+app.use((req, res, next) => {
+  const incomingId = String(req.get('x-request-id') || '').trim();
+  const requestId = incomingId && /^[a-zA-Z0-9_-]{6,64}$/.test(incomingId)
+    ? incomingId
+    : (typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : crypto.randomBytes(12).toString('hex'));
+  req.requestId = requestId;
+  res.setHeader('X-Request-Id', requestId);
+  next();
+});
 
 const normalizeOrigin = (value) => {
   const trimmed = String(value || '').trim().replace(/\/+$/, '');
@@ -148,8 +160,8 @@ const corsMiddleware = cors((req, callback) => {
       origin: normalized,
       credentials: false,
       methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Cache-Control', 'Pragma'],
-      exposedHeaders: ['Content-Disposition', 'Content-Type', 'Content-Length'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Request-Id', 'Cache-Control', 'Pragma'],
+      exposedHeaders: ['Content-Disposition', 'Content-Type', 'Content-Length', 'X-Request-Id'],
       optionsSuccessStatus: 204,
       maxAge: 86400,
     });
@@ -181,9 +193,11 @@ app.use('/api', (req, res, next) => {
   const timeoutMs = isHeavyRoute ? 120000 : 25000;
   res.setTimeout(timeoutMs, () => {
     if (!res.headersSent) {
+      console.error(`[API Timeout] [req:${req.requestId}] ${req.method} ${req.originalUrl} -> 504 after ${timeoutMs}ms`);
       res.status(504).json({
         success: false,
         code: 'REQUEST_TIMEOUT',
+        requestId: req.requestId,
         message: 'The server took too long to process this request. Please retry shortly.',
       });
     }
@@ -393,23 +407,30 @@ app.get('*', (req, res, next) => {
 
 // Global Error Handler
 app.use((err, req, res, next) => {
-  console.error('[Unhandled Error]', err.stack || err.message);
+  const statusCode = err.statusCode || 500;
+  console.error(
+    `[Unhandled Error] [req:${req.requestId || 'none'}] ${req.method} ${req.originalUrl} -> ${statusCode}:`,
+    err.message
+  );
 
   if (err.name === 'MulterError') {
     if (err.code === 'LIMIT_FILE_SIZE') {
       return res.status(400).json({
         success: false,
+        requestId: req.requestId,
         message: 'The uploaded file exceeds the maximum allowed size limit (30MB). Please upload a smaller PDF.',
       });
     }
     if (err.code === 'LIMIT_UNEXPECTED_FILE') {
       return res.status(400).json({
         success: false,
+        requestId: req.requestId,
         message: `Unexpected file upload field '${err.field}'. Expected 'file'.`,
       });
     }
     return res.status(400).json({
       success: false,
+      requestId: req.requestId,
       message: 'File upload error. Please select a valid student roster PDF and try again.',
     });
   }
@@ -418,13 +439,14 @@ app.use((err, req, res, next) => {
     return res.status(503).json({
       success: false,
       code: 'DATABASE_UNAVAILABLE',
+      requestId: req.requestId,
       message: 'Database service is temporarily unavailable while reconnecting to MongoDB Atlas. Please retry shortly.',
     });
   }
 
-  const statusCode = err.statusCode || 500;
   res.status(statusCode).json({
     success: false,
+    requestId: req.requestId,
     message:
       statusCode >= 500 && process.env.NODE_ENV !== 'development'
         ? 'Internal Server Error. Please contact support.'

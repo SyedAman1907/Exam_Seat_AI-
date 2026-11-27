@@ -4,6 +4,7 @@ const StudentEnrollment = require('../models/StudentEnrollment');
 const Classroom = require('../models/Classroom');
 const Allocation = require('../models/Allocation');
 const FacultyMapping = require('../models/FacultyMapping');
+const { resolveExamType } = require('../utils/examTypeUtils');
 
 // @desc    Get Admin Dashboard metrics and recent exams
 // @route   GET /api/dashboard/stats
@@ -60,7 +61,7 @@ exports.getDashboardStats = async (req, res) => {
         .sort({ roomNumber: 1 })
         .lean(),
       Exam.find({ isDeleted: { $ne: true } })
-        .select('examName subjectName subjectCode examDate startTime endTime session group section studentCount status approvalStatus visibilityStatus classroomId currentAllocationId createdAt')
+        .select('examName examType subjectName subjectCode examDate startTime endTime session group section studentCount status approvalStatus visibilityStatus classroomId currentAllocationId createdAt')
         .populate('classroomId', 'name roomNumber totalCapacity')
         .populate('currentAllocationId', 'version status publishedAt setDistribution')
         .sort({ createdAt: -1 })
@@ -121,7 +122,10 @@ exports.getDashboardStats = async (req, res) => {
           capacity: c.totalCapacity || 72,
           status: 'Active',
         })),
-        recentExams,
+        recentExams: recentExams.map((ex) => ({
+          ...ex,
+          examType: resolveExamType(ex),
+        })),
       },
     });
   } catch (error) {

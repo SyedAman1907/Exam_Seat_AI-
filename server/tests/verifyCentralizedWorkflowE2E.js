@@ -159,8 +159,8 @@ function verifyClientJsonParser() {
   assert.strictEqual(safeParse('   '), null);
   assert.strictEqual(safeParse('null'), null);
 
-  // Double-encoded "null" parses ONCE into string 'null' (never re-parsed or crashed)
-  assert.strictEqual(safeParse('"null"'), 'null');
+  // Double-encoded "null" safely resolves to null without blindly parsing into objects
+  assert.strictEqual(safeParse('"null"'), null);
 
   // Already-parsed object is returned as-is without re-parsing
   const obj = { success: true, data: [] };
