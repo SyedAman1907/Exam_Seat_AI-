@@ -199,10 +199,6 @@ api.interceptors.response.use(
       IDEMPOTENT_METHODS.has(method) &&
       config.skipRetry !== true &&
       (error.code === 'ECONNABORTED' || error.code === 'ERR_NETWORK' || TRANSIENT_STATUSES.has(status));
-      !isCanceled &&
-      IDEMPOTENT_METHODS.has(method) &&
-      config.skipRetry !== true &&
-      (error.code === 'ECONNABORTED' || error.code === 'ERR_NETWORK' || TRANSIENT_STATUSES.has(status));
 
     if (isTransient) {
       const retryCount = config.__retryCount || 0;

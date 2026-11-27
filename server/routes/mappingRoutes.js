@@ -9,6 +9,11 @@ const {
   previewMappingPdf,
   confirmMapping,
   confirmBatchMappings,
+  startUploadPreviewJob,
+  startConfirmBatchJob,
+  getMappingJobStatus,
+  listMappingJobs,
+  retryMappingJobHandler,
   getMappings,
   createMapping,
   getPortalGroups,
@@ -83,6 +88,13 @@ const handleUploadSinglePdf = (req, res, next) => {
 
 // All routes require authentication
 router.use(protect);
+
+// Background Job Endpoints for multi-page PDF parsing and large batch confirmation
+router.post('/jobs/upload-preview', handleUploadSinglePdf, startUploadPreviewJob);
+router.post('/jobs/confirm-batch', startConfirmBatchJob);
+router.get('/jobs', listMappingJobs);
+router.get('/jobs/:jobId', getMappingJobStatus);
+router.post('/jobs/:jobId/retry', retryMappingJobHandler);
 
 // Upload & Preview student roster PDF (Single 'file' field)
 router.post('/upload-preview', handleUploadSinglePdf, previewMappingPdf);

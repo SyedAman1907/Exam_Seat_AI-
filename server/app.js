@@ -173,7 +173,9 @@ app.use('/api', (req, res, next) => {
     req.path.includes('/reports') ||
     req.path.includes('/multi-pdf') ||
     req.path.includes('/preview-pdf') ||
+    req.path.includes('/upload-preview') ||
     req.path.includes('/confirm-batch') ||
+    req.path.includes('/confirm') ||
     req.path.includes('/create-centralized') ||
     req.path.includes('/import');
   const timeoutMs = isHeavyRoute ? 120000 : 25000;

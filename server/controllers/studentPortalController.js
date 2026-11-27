@@ -415,28 +415,58 @@ exports.lookupSeat = async (req, res) => {
 
     let targetExam = null;
     let preMatchedAlloc = preloadedAllocation || null;
+    let cachedSeatIndex = null;
+
+    const loadCachedSeatIndex = (id) =>
+      portalCache.getExamSeatIndex(
+        id,
+        async () => {
+          const allocDoc = await Allocation.findOne({
+            examId: id,
+            isCurrent: true,
+            status: { $ne: 'DRAFT' },
+          })
+            .select('section group status students')
+            .lean();
+
+          if (!allocDoc || !Array.isArray(allocDoc.students)) {
+            return null;
+          }
+          const byRegNo = new Map();
+          for (const st of allocDoc.students) {
+            const key = String(st.registrationNumber || '').trim().toUpperCase();
+            if (key) {
+              byRegNo.set(key, st);
+            }
+          }
+          return {
+            section: allocDoc.section,
+            group: allocDoc.group,
+            status: allocDoc.status,
+            byRegNo,
+          };
+        },
+        bypassCache
+      );
 
     if (examId) {
       targetExam = todayExams.find((e) => e._id.toString() === examId.toString());
     } else if (todayExams.length === 1) {
       targetExam = todayExams[0];
     } else {
-      const todayIds = todayExams.map((ex) => ex._id);
-      const matchingAllocs = await Allocation.find({
-        examId: { $in: todayIds },
-        isCurrent: true,
-        status: { $ne: 'DRAFT' },
-        'students.registrationNumber': regNo,
-      })
-        .select({ examId: 1, section: 1, group: 1, status: 1, 'students.$': 1 })
-        .lean();
-
-      const allocByExamId = new Map(matchingAllocs.map((a) => [String(a.examId), a]));
-      const enrolledExams = todayExams.filter((ex) => allocByExamId.has(String(ex._id)));
-      const candidates = enrolledExams.length > 0 ? enrolledExams : todayExams;
-      candidates.sort((a, b) => windowRank(a) - windowRank(b));
-      targetExam = candidates[0];
-      preMatchedAlloc = targetExam ? allocByExamId.get(String(targetExam._id)) || null : null;
+      const seatIndices = await Promise.all(
+        todayExams.map(async (ex) => ({
+          exam: ex,
+          index: await loadCachedSeatIndex(ex._id),
+        }))
+      );
+      const enrolledMatches = seatIndices.filter((entry) => entry.index?.byRegNo?.has(regNo));
+      const candidatePool =
+        enrolledMatches.length > 0 ? enrolledMatches.map((entry) => entry.exam) : todayExams;
+      candidatePool.sort((a, b) => windowRank(a) - windowRank(b));
+      targetExam = candidatePool[0];
+      const matchedEntry = seatIndices.find((entry) => String(entry.exam._id) === String(targetExam?._id));
+      cachedSeatIndex = matchedEntry?.index || null;
     }
 
     if (!targetExam) {
@@ -523,37 +553,10 @@ exports.lookupSeat = async (req, res) => {
     let classroomName = 'ET BLOCK 3010';
     let inferredGroup = targetExam.group || 'Group A';
 
-    // Use cached O(1) read-only seat index per exam when not bypassed, falling back to positional $ query
-    const cachedSeatIndex = await portalCache.getExamSeatIndex(
-      targetExam._id,
-      async () => {
-        const allocDoc = await Allocation.findOne({
-          examId: targetExam._id,
-          isCurrent: true,
-          status: { $ne: 'DRAFT' },
-        })
-          .select('section group status students')
-          .lean();
-
-        if (!allocDoc || !Array.isArray(allocDoc.students)) {
-          return null;
-        }
-        const byRegNo = new Map();
-        for (const st of allocDoc.students) {
-          const key = String(st.registrationNumber || '').trim().toUpperCase();
-          if (key) {
-            byRegNo.set(key, st);
-          }
-        }
-        return {
-          section: allocDoc.section,
-          group: allocDoc.group,
-          status: allocDoc.status,
-          byRegNo,
-        };
-      },
-      bypassCache
-    );
+    // Use cached O(1) read-only seat index per exam when not bypassed
+    if (!cachedSeatIndex) {
+      cachedSeatIndex = await loadCachedSeatIndex(targetExam._id);
+    }
 
     if (cachedSeatIndex) {
       studentMatch = cachedSeatIndex.byRegNo.get(regNo) || null;

@@ -8,6 +8,14 @@ const AuditLog = require('../models/AuditLog');
 const PdfExtractorService = require('../services/pdfExtractorService');
 const StudentClassificationService = require('../services/studentClassificationService');
 const { isFacultyMappingOwner, filterMappingsForUser } = require('../utils/facultyAuthUtils');
+const MappingJob = require('../models/MappingJob');
+const {
+  runBulkWriteChunked,
+  validateAndPrepareMappingItem,
+  prefetchContextForMappings,
+  persistPreparedMapping,
+} = require('../services/mappingPersistenceService');
+const mappingJobService = require('../services/mappingJobService');
 const fs = require('fs');
 
 /**
@@ -275,59 +283,70 @@ exports.confirmMapping = async (req, res) => {
 
     await newMapping.save();
 
-    // Synchronize to StudentEnrollment and Student collections
+    // Synchronize to StudentEnrollment and Student collections using batched bulkWrite
+    const studentBulkOps = [];
+    const enrollmentBulkOps = [];
     for (const st of cleanStudentList) {
-      await Student.findOneAndUpdate(
-        { registrationNumber: st.registrationNumber },
-        {
-          $set: {
-            name: st.name,
-            department: cleanDept,
-            year: year || 'IV Year',
-            semester: semester || 'I Semester',
-            section: cleanSection,
-            academicYear: cleanAcadYear,
-            defaultGroup: st.group,
-            group: st.group,
-            facultyName: cleanFaculty,
-            a1: st.a1,
-            a2: st.a2,
-            a3: st.a3,
-            a4: st.a4,
-            a5: st.a5,
-            a6: st.a6,
+      studentBulkOps.push({
+        updateOne: {
+          filter: { registrationNumber: st.registrationNumber },
+          update: {
+            $set: {
+              name: st.name,
+              department: cleanDept,
+              year: year || 'IV Year',
+              semester: semester || 'I Semester',
+              section: cleanSection,
+              academicYear: cleanAcadYear,
+              defaultGroup: st.group,
+              group: st.group,
+              facultyName: cleanFaculty,
+              a1: st.a1,
+              a2: st.a2,
+              a3: st.a3,
+              a4: st.a4,
+              a5: st.a5,
+              a6: st.a6,
+            },
           },
+          upsert: true,
         },
-        { upsert: true, new: true }
-      );
+      });
 
-      await StudentEnrollment.findOneAndUpdate(
-        {
-          rollNumber: st.registrationNumber,
-          subjectName: cleanSubName,
-          academicYear: cleanAcadYear,
-        },
-        {
-          $set: {
-            studentName: st.name,
-            facultyName: cleanFaculty,
-            section: cleanSection,
-            subjectCode: cleanSubCode,
-            group: st.group,
-            department: cleanDept,
-            year: year || 'IV Year',
-            semester: semester || 'I Semester',
-            a1: st.a1,
-            a2: st.a2,
-            a3: st.a3,
-            a4: st.a4,
-            a5: st.a5,
-            a6: st.a6,
+      enrollmentBulkOps.push({
+        updateOne: {
+          filter: {
+            rollNumber: st.registrationNumber,
+            subjectName: cleanSubName,
+            academicYear: cleanAcadYear,
           },
+          update: {
+            $set: {
+              studentName: st.name,
+              facultyName: cleanFaculty,
+              section: cleanSection,
+              subjectCode: cleanSubCode,
+              group: st.group,
+              department: cleanDept,
+              year: year || 'IV Year',
+              semester: semester || 'I Semester',
+              a1: st.a1,
+              a2: st.a2,
+              a3: st.a3,
+              a4: st.a4,
+              a5: st.a5,
+              a6: st.a6,
+            },
+          },
+          upsert: true,
         },
-        { upsert: true, new: true }
-      );
+      });
     }
+
+    await Promise.all([
+      runBulkWriteChunked(Student, studentBulkOps),
+      runBulkWriteChunked(StudentEnrollment, enrollmentBulkOps),
+    ]);
 
     // Write Audit Log
     await AuditLog.create({
@@ -378,75 +397,15 @@ exports.confirmBatchMappings = async (req, res) => {
   const validatedMappings = [];
 
   for (let idx = 0; idx < mappings.length; idx++) {
-    const m = mappings[idx];
-    const rNum = idx + 1;
-    const cleanFaculty = (m.facultyName || '').trim();
-    const cleanSubName = (m.subjectName || '').trim();
-    const cleanSubCode = (m.subjectCode || '').trim().toUpperCase();
-    const cleanSection = (m.section || '').trim().toUpperCase();
-    const cleanGroup = m.group || (['A1', 'A2', 'A3'].includes(cleanSection) ? 'Group A' : ['A4', 'A5', 'A6'].includes(cleanSection) ? 'Group B' : 'Group A');
-    const cleanAcadYear = m.academicYear || '2026-2027';
-    const cleanYear = m.year || 'III Year';
-    const cleanSemester = m.semester || 'I Semester';
-    const mStudents = m.students || [];
-
-    if (!cleanFaculty) {
-      validationErrors.push(`Roster #${rNum} (${cleanSubName || 'Unknown'}): Faculty name is missing.`);
-    }
-    if (!cleanSubName) {
-      validationErrors.push(`Roster #${rNum} (Sec ${cleanSection || 'Unknown'}): Subject name is missing.`);
-    }
-    if (!cleanSubCode) {
-      validationErrors.push(`Roster #${rNum} (${cleanSubName}): Subject code is missing.`);
-    }
-    if (!['A1', 'A2', 'A3', 'A4', 'A5', 'A6'].includes(cleanSection)) {
-      validationErrors.push(`Roster #${rNum} (${cleanSubName}): Invalid section '${cleanSection}'. Expected A1, A2, A3, A4, A5, or A6.`);
-    }
-    if (!Array.isArray(mStudents) || mStudents.length === 0) {
-      validationErrors.push(`Roster #${rNum} (${cleanSubName} - Sec ${cleanSection}): No student records found.`);
-    }
-
-    // Deduplicate students ONLY within this individual mapping
-    const studentMap = new Map();
-    for (const s of mStudents) {
-      const reg = (s.registrationNumber || s.rollNumber || '').trim().toUpperCase();
-      const name = (s.name || s.studentName || '').trim();
-      if (reg && name && !studentMap.has(reg)) {
-        const classification = StudentClassificationService.classifyStudent(reg);
-        studentMap.set(reg, {
-          registrationNumber: reg,
-          name,
-          group: s.group || classification.group || cleanGroup,
-          a1: s.a1 || '',
-          a2: s.a2 || '',
-          a3: s.a3 || '',
-          a4: s.a4 || '',
-          a5: s.a5 || '',
-          a6: s.a6 || '',
-        });
-      }
-    }
-
-    const deduplicatedStudents = Array.from(studentMap.values()).sort((a, b) =>
-      a.registrationNumber.localeCompare(b.registrationNumber)
+    const { errors, prepared } = validateAndPrepareMappingItem(
+      mappings[idx],
+      idx,
+      sourceFileName || mappings[idx]?.sourceFileName || 'Uploaded Nominal PDF'
     );
-
-    if (deduplicatedStudents.length === 0) {
-      validationErrors.push(`Roster #${rNum} (${cleanSubName} - Sec ${cleanSection}): Zero valid students with registration numbers found.`);
+    if (errors.length > 0) {
+      validationErrors.push(...errors);
     }
-
-    validatedMappings.push({
-      cleanFaculty,
-      cleanSubName,
-      cleanSubCode,
-      cleanSection,
-      cleanGroup,
-      cleanAcadYear,
-      cleanYear,
-      cleanSemester,
-      deduplicatedStudents,
-      sourceFileName: sourceFileName || m.sourceFileName || 'Uploaded Nominal PDF',
-    });
+    validatedMappings.push(prepared);
   }
 
   if (validationErrors.length > 0) {
@@ -457,7 +416,7 @@ exports.confirmBatchMappings = async (req, res) => {
     });
   }
 
-  // 2. Transaction Safety (where supported by MongoDB replica set / mongos)
+  // 2. Transaction Safety (where supported by MongoDB replica set / mongos) + batched bulkWrite
   let session = null;
   let hasActiveTransaction = false;
 
@@ -477,246 +436,58 @@ exports.confirmBatchMappings = async (req, res) => {
   }
 
   try {
+    const { existingByKey, facultyUserByName, subjectCodeSet } = await prefetchContextForMappings(
+      validatedMappings,
+      session
+    );
+
     const savedMappings = [];
     const uniqueStudentsSet = new Set();
+    const studentOpMap = new Map();
+    const enrollmentBulkOps = [];
+    const auditLogs = [];
     let totalEnrollments = 0;
     let reusedCount = 0;
 
     for (const vm of validatedMappings) {
-      const {
-        cleanFaculty,
-        cleanSubName,
-        cleanSubCode,
-        cleanSection,
-        cleanGroup,
-        cleanAcadYear,
-        cleanYear,
-        cleanSemester,
-        deduplicatedStudents,
-        sourceFileName: mSourceFile,
-      } = vm;
-
-      totalEnrollments += deduplicatedStudents.length;
-
-      // Find existing active mapping for (subjectCode, section, group)
-      const existingQuery = {
-        subjectCode: cleanSubCode,
-        section: cleanSection,
-        isCurrent: true,
-        $or: [
-          { group: cleanGroup },
-          { group: { $exists: false } },
-          { group: null },
-          { group: '' },
-        ],
-      };
-
-      const existing = session
-        ? await FacultyMapping.findOne(existingQuery).session(session)
-        : await FacultyMapping.findOne(existingQuery);
-
-      // Check if exact same mapping is already active (repeated confirmation safety)
-      if (existing) {
-        const isSameFaculty = existing.facultyName === cleanFaculty;
-        const isSameCount = (existing.students || []).length === deduplicatedStudents.length;
-
-        let isSameStudents = false;
-        if (isSameFaculty && isSameCount) {
-          const existingRegs = new Set((existing.students || []).map((s) => s.registrationNumber));
-          isSameStudents = deduplicatedStudents.every((s) => existingRegs.has(s.registrationNumber));
-        }
-
-        if (isSameStudents) {
-          // Exactly identical mapping already exists and is active!
-          // Avoid creating duplicate rows on repeated clicks
-          savedMappings.push({
-            id: existing._id,
-            mappingId: existing._id,
-            facultyName: existing.facultyName,
-            subjectName: existing.subjectName,
-            subjectCode: existing.subjectCode,
-            section: existing.section,
-            group: existing.group || cleanGroup,
-            studentCount: existing.studentCount,
-            version: existing.version || 1,
-            status: 'ALREADY_ACTIVE',
-          });
-          reusedCount++;
-
-          // Still ensure unique students are counted
-          for (const st of deduplicatedStudents) {
-            uniqueStudentsSet.add(st.registrationNumber);
-          }
-          continue;
-        }
-
-        // Mapping exists but has different data or faculty
-        if (!replaceExisting && !isSameFaculty) {
-          // Explicit protection: Do not silently overwrite genuine existing mappings without replaceExisting flag
-          if (hasActiveTransaction && session) {
-            await session.abortTransaction();
-          }
-          return res.status(409).json({
-            success: false,
-            message: `Mapping conflict: ${cleanSubCode} Section ${cleanSection} is currently assigned to ${existing.facultyName} (v${existing.version}). Enable 'Update/Replace existing mapping versions' to overwrite.`,
-          });
-        }
-
-        // Archive existing mapping (preserve version history)
-        existing.isCurrent = false;
-        if (session) {
-          await existing.save({ session });
-        } else {
-          await existing.save();
-        }
-      }
-
-      const nextVersion = existing ? (existing.version || 1) + 1 : 1;
-
-      // Lookup faculty User ID if registered
-      let facultyUserId = null;
-      try {
-        const facultyUser = await User.findOne({
-          name: { $regex: new RegExp(`^${cleanFaculty.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
-          role: 'faculty',
-        });
-        if (facultyUser) facultyUserId = facultyUser._id;
-      } catch (uErr) {}
-
-      // Create new permanent FacultyMapping record
-      const newMapping = new FacultyMapping({
-        facultyId: facultyUserId || (req.user ? req.user._id : undefined),
-        facultyName: cleanFaculty,
-        subjectName: cleanSubName,
-        subjectCode: cleanSubCode,
-        section: cleanSection,
-        group: cleanGroup,
-        academicYear: cleanAcadYear,
-        department: 'Computer Science and Engineering',
-        year: cleanYear,
-        semester: cleanSemester,
-        version: nextVersion,
-        isCurrent: true,
-        students: deduplicatedStudents,
-        studentCount: deduplicatedStudents.length,
-        sourceFileName: mSourceFile,
-        mappedBy: req.user ? req.user._id : undefined,
-      });
-
-      if (session) {
-        await newMapping.save({ session });
-      } else {
-        await newMapping.save();
-      }
-
-      savedMappings.push({
-        id: newMapping._id,
-        mappingId: newMapping._id,
-        facultyName: newMapping.facultyName,
-        subjectName: newMapping.subjectName,
-        subjectCode: newMapping.subjectCode,
-        section: newMapping.section,
-        group: newMapping.group,
-        studentCount: newMapping.studentCount,
-        version: newMapping.version,
-        status: 'SAVED',
-      });
-
-      // Synchronize Master Student & Multi-Subject StudentEnrollment records via bulkWrite
-      const studentBulkOps = [];
-      const enrollmentBulkOps = [];
-
-      for (const st of deduplicatedStudents) {
+      totalEnrollments += vm.deduplicatedStudents.length;
+      for (const st of vm.deduplicatedStudents) {
         uniqueStudentsSet.add(st.registrationNumber);
-
-        studentBulkOps.push({
-          updateOne: {
-            filter: { registrationNumber: st.registrationNumber, examId: { $exists: false } },
-            update: {
-              $setOnInsert: {
-                registrationNumber: st.registrationNumber,
-                status: 'active',
-              },
-              $set: {
-                name: st.name,
-                department: 'Computer Science and Engineering',
-                year: cleanYear,
-                semester: cleanSemester,
-                section: cleanSection,
-                group: st.group,
-                academicYear: cleanAcadYear,
-              },
-            },
-            upsert: true,
-          },
-        });
-
-        enrollmentBulkOps.push({
-          updateOne: {
-            filter: {
-              rollNumber: st.registrationNumber,
-              subjectName: cleanSubName,
-              academicYear: cleanAcadYear,
-            },
-            update: {
-              $set: {
-                rollNumber: st.registrationNumber,
-                studentName: st.name,
-                facultyName: cleanFaculty,
-                section: cleanSection,
-                subjectName: cleanSubName,
-                subjectCode: cleanSubCode,
-                group: st.group,
-                academicYear: cleanAcadYear,
-                department: 'Computer Science and Engineering',
-                year: cleanYear,
-                semester: cleanSemester,
-                a1: st.a1 || '',
-                a2: st.a2 || '',
-                a3: st.a3 || '',
-                a4: st.a4 || '',
-                a5: st.a5 || '',
-                a6: st.a6 || '',
-              },
-            },
-            upsert: true,
-          },
-        });
       }
 
-      const bulkOpts = session ? { ordered: false, session } : { ordered: false };
-      if (studentBulkOps.length > 0) {
-        await Student.bulkWrite(studentBulkOps, bulkOpts);
-      }
-      if (enrollmentBulkOps.length > 0) {
-        await StudentEnrollment.bulkWrite(enrollmentBulkOps, bulkOpts);
-      }
+      const resObj = await persistPreparedMapping(vm, {
+        replaceExisting,
+        user: req.user,
+        session,
+        existingByKey,
+        facultyUserByName,
+        subjectCodeSet,
+        deferBulkSync: true,
+        studentOpMap,
+        enrollmentBulkOps,
+        auditLogsOut: auditLogs,
+      });
 
-      // Write Audit Log
+      savedMappings.push(resObj.savedSummary);
+      if (resObj.reused) reusedCount++;
+    }
+
+    await Promise.all([
+      runBulkWriteChunked(Student, Array.from(studentOpMap.values()), session),
+      runBulkWriteChunked(StudentEnrollment, enrollmentBulkOps, session),
+    ]);
+
+    if (auditLogs.length > 0) {
       try {
-        await AuditLog.create({
-          action: 'FACULTY_MAPPING_BATCH_CONFIRMED',
-          performedBy: req.user ? req.user._id : undefined,
-          performedByName: req.user ? req.user.name : 'Administrator',
-          details: {
-            mappingId: newMapping._id,
-            subjectCode: cleanSubCode,
-            subjectName: cleanSubName,
-            facultyName: cleanFaculty,
-            section: cleanSection,
-            group: cleanGroup,
-            studentCount: deduplicatedStudents.length,
-            version: nextVersion,
-          },
-        });
-      } catch (aErr) {}
+        await AuditLog.insertMany(auditLogs, session ? { session, ordered: false } : { ordered: false });
+      } catch {}
     }
 
     if (hasActiveTransaction && session) {
       await session.commitTransaction();
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: `Successfully confirmed ${savedMappings.length} mappings (${totalEnrollments} enrollments across ${uniqueStudentsSet.size} unique students).`,
       count: savedMappings.length,
@@ -732,9 +503,9 @@ exports.confirmBatchMappings = async (req, res) => {
       } catch (abErr) {}
     }
     console.error('[Confirm Batch Mappings Error]:', err);
-    res.status(500).json({
+    return res.status(err.statusCode || 500).json({
       success: false,
-      message: `Failed to confirm batch mappings: ${err.message}`,
+      message: err.statusCode === 409 ? err.message : `Failed to confirm batch mappings: ${err.message}`,
     });
   } finally {
     if (session) {
@@ -742,6 +513,148 @@ exports.confirmBatchMappings = async (req, res) => {
         session.endSession();
       } catch (e) {}
     }
+  }
+};
+
+/**
+ * @desc    Start non-blocking background PDF extraction job (prevents HTTP timeouts on multi-page PDFs)
+ * @route   POST /api/mappings/jobs/upload-preview
+ * @access  Private (Admin / Exam Incharge)
+ */
+exports.startUploadPreviewJob = async (req, res) => {
+  const uploadedFiles = req.file ? [req.file] : (req.files || []);
+  if (!uploadedFiles || uploadedFiles.length === 0) {
+    return res.status(400).json({
+      success: false,
+      message: 'Please upload a student roster PDF file.',
+    });
+  }
+
+  const file = uploadedFiles[0];
+  try {
+    const uploadMode = req.body?.uploadMode === 'single' ? 'single' : 'multi';
+    const job = await mappingJobService.createUploadPreviewJob({
+      filePath: file.path,
+      originalName: file.originalname,
+      uploadMode,
+      body: req.body || {},
+      user: req.user,
+    });
+
+    return res.status(202).json({
+      success: true,
+      message: 'PDF uploaded and queued for background roster extraction.',
+      data: mappingJobService.formatJobResponse(job),
+    });
+  } catch (err) {
+    try {
+      if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    } catch {}
+    console.error('[Start Upload Preview Job Error]:', err);
+    return res.status(err.statusCode || 500).json({
+      success: false,
+      message: err.message || 'Unable to queue PDF extraction job.',
+    });
+  }
+};
+
+/**
+ * @desc    Start non-blocking background batch confirmation job (persists rosters independently without silent loss)
+ * @route   POST /api/mappings/jobs/confirm-batch
+ * @access  Private (Admin / Exam Incharge)
+ */
+exports.startConfirmBatchJob = async (req, res) => {
+  try {
+    const { mappings, sourceFileName = 'Roster.pdf', replaceExisting = true } = req.body || {};
+    if (!Array.isArray(mappings) || mappings.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No mappings provided to confirm.',
+      });
+    }
+
+    const job = await mappingJobService.createConfirmBatchJob({
+      mappings,
+      sourceFileName,
+      replaceExisting,
+      user: req.user,
+    });
+
+    return res.status(202).json({
+      success: true,
+      message: `Queued ${mappings.length} mapping(s) for background confirmation.`,
+      data: mappingJobService.formatJobResponse(job),
+    });
+  } catch (err) {
+    return res.status(err.statusCode || 500).json({
+      success: false,
+      message: err.message || 'Failed to queue batch confirmation job.',
+      ...(err.errors ? { errors: err.errors } : {}),
+    });
+  }
+};
+
+/**
+ * @desc    Poll background mapping job status & progress
+ * @route   GET /api/mappings/jobs/:jobId
+ * @access  Private
+ */
+exports.getMappingJobStatus = async (req, res) => {
+  try {
+    const job = await MappingJob.findById(req.params.jobId).lean();
+    if (!job) {
+      return res.status(404).json({ success: false, message: 'Mapping job not found or expired.' });
+    }
+    return res.status(200).json({
+      success: true,
+      data: mappingJobService.formatJobResponse(job),
+    });
+  } catch (err) {
+    return res.status(400).json({ success: false, message: err.message || 'Invalid mapping job ID.' });
+  }
+};
+
+/**
+ * @desc    List recent mapping jobs (for status recovery / retry)
+ * @route   GET /api/mappings/jobs
+ * @access  Private
+ */
+exports.listMappingJobs = async (req, res) => {
+  try {
+    const filter = req.user?.role === 'admin' ? {} : { createdBy: req.user?._id };
+    const jobs = await MappingJob.find(filter)
+      .select('-previewMappings -inputMappings')
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .lean();
+
+    return res.status(200).json({
+      success: true,
+      data: jobs.map(mappingJobService.formatJobResponse),
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * @desc    Safely retry only failed items of a batch confirmation job (idempotent)
+ * @route   POST /api/mappings/jobs/:jobId/retry
+ * @access  Private (Admin / Exam Incharge)
+ */
+exports.retryMappingJobHandler = async (req, res) => {
+  try {
+    const job = await mappingJobService.retryMappingJob(req.params.jobId, req.user);
+    return res.status(202).json({
+      success: true,
+      message: 'Retrying failed mappings in the background without duplicating saved records.',
+      data: mappingJobService.formatJobResponse(job),
+    });
+  } catch (err) {
+    return res.status(err.statusCode || 500).json({
+      success: false,
+      message: err.message || 'Failed to retry mapping job.',
+    });
   }
 };
 

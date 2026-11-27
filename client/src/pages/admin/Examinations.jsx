@@ -39,6 +39,7 @@ import {
   validateExamTimeRange,
   normalizeSessionCode,
   formatSessionLabel,
+  toMinutesFromMidnight,
 } from '../../utils/dateTime';
 import TimeSelect12h from '../../components/TimeSelect12h';
 
@@ -672,13 +673,18 @@ const Examinations = () => {
     const normSess = normalizeSessionCode(sess, 'AM');
     const isPM = normSess === 'PM';
     setFormData((prev) => {
-      const startIsAM = String(prev.startTime || '').toUpperCase().includes('AM');
-      const startIsPM = String(prev.startTime || '').toUpperCase().includes('PM');
-      const needsResetForSession = !editingExam || (isPM && startIsAM) || (!isPM && startIsPM);
+      const startMins = toMinutesFromMidnight(prev.startTime || (isPM ? '09:00 AM' : '02:00 PM'));
+      const endMins = toMinutesFromMidnight(prev.endTime || (isPM ? '12:00 PM' : '05:00 PM'));
+      const startIsAfternoon = startMins >= 12 * 60;
+      const endIsAfternoon = endMins >= 12 * 60;
+      const needsDefaultForSession = isPM
+        ? !startIsAfternoon || (!prev.allowOvernight && !endIsAfternoon)
+        : startIsAfternoon;
+
       return {
         ...prev,
         session: normSess,
-        ...(needsResetForSession
+        ...(needsDefaultForSession
           ? {
             startTime: isPM ? '02:00 PM' : '09:00 AM',
             endTime: isPM ? '05:00 PM' : '12:00 PM',
@@ -1985,6 +1991,7 @@ const Examinations = () => {
                       idPrefix="admin-end"
                       label="End Time:"
                       required
+                      isEndTime
                       value={formData.endTime}
                       sessionHint={formData.session}
                       onChange={(val) => setFormData((prev) => ({ ...prev, endTime: val }))}

@@ -11,8 +11,8 @@ if (typeof rateLimit !== 'function') {
 // Per-(IP, registrationNumber) limiter prevents scraping a single roll number while allowing
 // 500+ distinct students sharing a campus Wi-Fi / NAT IP to look up seats simultaneously.
 const studentLookupLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 30,
+  windowMs: 60 * 1000,
+  max: Number(process.env.STUDENT_LOOKUP_PER_ROLL_LIMIT) || 30,
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => {
@@ -27,10 +27,10 @@ const studentLookupLimiter = rateLimit({
   },
 });
 
-// High-ceiling IP burst protection for student portal endpoints during peak 500+ student load
+// High-ceiling IP burst protection for student portal endpoints during peak 500+ student load on shared campus Wi-Fi NAT
 const studentPortalBurstLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 3000,
+  windowMs: 60 * 1000,
+  max: Number(process.env.STUDENT_PORTAL_BURST_LIMIT) || 30000,
   standardHeaders: true,
   legacyHeaders: false,
   message: {

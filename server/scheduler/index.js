@@ -75,6 +75,7 @@ class PublicationScheduler {
     if (this.isRunning) return;
     this.isRunning = true;
     console.log('[Scheduler] Background Publication and Completion Scheduler initialized.');
+    SchedulerLock.init().catch(() => {});
 
     // 1. Immediately process overdue completions and scheduled publications on server boot
     if (options.runImmediate !== false) {

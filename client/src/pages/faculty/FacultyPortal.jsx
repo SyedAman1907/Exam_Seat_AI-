@@ -32,9 +32,11 @@ import {
   getTodayKolkataIso,
   computeVisibilityWindowLabel,
   formatExamTimeRange,
+  formatTime12h,
   validateExamTimeRange,
   normalizeSessionCode,
   formatSessionLabel,
+  toMinutesFromMidnight,
 } from '../../utils/dateTime';
 import TimeSelect12h from '../../components/TimeSelect12h';
 
@@ -346,6 +348,8 @@ const FacultyPortal = () => {
             .map((s) => s.trim())
             .filter(Boolean);
 
+    const normSess = normalizeSessionCode(exam.session, 'AM');
+    const isPM = normSess === 'PM';
     setEditingExam(exam);
     setExamForm({
       academicYear: exam.academicYear || '2026-2027',
@@ -355,14 +359,40 @@ const FacultyPortal = () => {
       subjectCode: exam.subjectCode || '',
       examName: exam.examName || '',
       examDate: exam.examDate || getTodayKolkataIso(),
-      startTime: exam.startTime || '09:00 AM',
-      endTime: exam.endTime || '12:00 PM',
-      session: normalizeSessionCode(exam.session, 'AM'),
+      startTime: formatTime12h(exam.startTime, isPM ? '02:00 PM' : '09:00 AM'),
+      endTime: formatTime12h(exam.endTime, isPM ? '05:00 PM' : '12:00 PM'),
+      session: normSess,
       group: exam.group || 'ALL',
+      allowOvernight: Boolean(exam.allowOvernight),
     });
     setSelectedSections(existingSecs);
     setExamFormError('');
     setShowCreateExamModal(true);
+  };
+
+  const handleExamSessionChange = (sess) => {
+    const normSess = normalizeSessionCode(sess, 'AM');
+    const isPM = normSess === 'PM';
+    setExamForm((prev) => {
+      const startMins = toMinutesFromMidnight(prev.startTime || (isPM ? '09:00 AM' : '02:00 PM'));
+      const endMins = toMinutesFromMidnight(prev.endTime || (isPM ? '12:00 PM' : '05:00 PM'));
+      const startIsAfternoon = startMins >= 12 * 60;
+      const endIsAfternoon = endMins >= 12 * 60;
+      const needsDefault = isPM
+        ? !startIsAfternoon || (!prev.allowOvernight && !endIsAfternoon)
+        : startIsAfternoon;
+
+      return {
+        ...prev,
+        session: normSess,
+        ...(needsDefault
+          ? {
+              startTime: isPM ? '02:00 PM' : '09:00 AM',
+              endTime: isPM ? '05:00 PM' : '12:00 PM',
+            }
+          : {}),
+      };
+    });
   };
 
   const handleToggleExamSection = (sectionCode) => {
@@ -1436,14 +1466,7 @@ const FacultyPortal = () => {
                     <div className="grid grid-cols-2 gap-1.5">
                       <button
                         type="button"
-                        onClick={() =>
-                          setExamForm((prev) => ({
-                            ...prev,
-                            session: 'AM',
-                            startTime: '09:00 AM',
-                            endTime: '12:00 PM',
-                          }))
-                        }
+                        onClick={() => handleExamSessionChange('AM')}
                         className={`py-2 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
                           normalizeSessionCode(examForm.session, 'AM') === 'AM'
                             ? 'bg-primary text-white shadow-xs'
@@ -1454,14 +1477,7 @@ const FacultyPortal = () => {
                       </button>
                       <button
                         type="button"
-                        onClick={() =>
-                          setExamForm((prev) => ({
-                            ...prev,
-                            session: 'PM',
-                            startTime: '02:00 PM',
-                            endTime: '05:00 PM',
-                          }))
-                        }
+                        onClick={() => handleExamSessionChange('PM')}
                         className={`py-2 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
                           normalizeSessionCode(examForm.session, 'AM') === 'PM'
                             ? 'bg-primary text-white shadow-xs'
@@ -1488,6 +1504,7 @@ const FacultyPortal = () => {
                     <TimeSelect12h
                       label="End Time:"
                       required
+                      isEndTime
                       idPrefix="faculty-end"
                       value={examForm.endTime}
                       sessionHint={examForm.session}
@@ -1495,6 +1512,19 @@ const FacultyPortal = () => {
                     />
                   </div>
                 </div>
+
+                {(() => {
+                  const tc = validateExamTimeRange(examForm.startTime, examForm.endTime, {
+                    session: examForm.session,
+                    allowOvernight: Boolean(examForm.allowOvernight),
+                  });
+                  return !tc.valid ? (
+                    <div className="px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-[11px] text-red-700 font-semibold flex items-center space-x-2">
+                      <AlertCircle size={14} className="flex-shrink-0 text-red-600" />
+                      <span>{tc.message}</span>
+                    </div>
+                  ) : null;
+                })()}
 
                 <div className="px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg text-[11px] text-navy-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
                   <span className="font-semibold">

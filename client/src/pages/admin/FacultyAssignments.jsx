@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo, useDeferredValue } from 'react';
+import { useState, useEffect, useMemo, useDeferredValue, useRef } from 'react';
+import axios from 'axios';
 import api, { API_TIMEOUTS, formatApiError } from '../../services/api';
 import {
   Users,
@@ -38,11 +39,23 @@ const FacultyAssignments = () => {
   const [selectedFile, setSelectedFile] = useState(null);
   const [replaceExisting, setReplaceExisting] = useState(true);
 
-  // Preview states
+  // Preview & Background Job states
   const [uploading, setUploading] = useState(false);
   const [previewError, setPreviewError] = useState('');
+  const [refreshWarning, setRefreshWarning] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
   const [confirming, setConfirming] = useState(false);
+  const [activeJob, setActiveJob] = useState(null);
+  const [retryingJob, setRetryingJob] = useState(false);
+  const jobPollAbortRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      if (jobPollAbortRef.current) {
+        jobPollAbortRef.current.abort();
+      }
+    };
+  }, []);
 
   // Single roster preview
   const [previewStudents, setPreviewStudents] = useState([]);
@@ -95,18 +108,68 @@ const FacultyAssignments = () => {
     return defaultSubjectPresets;
   }, [dbSubjects]);
 
-  const fetchMappings = async () => {
+  const fetchMappings = async ({ preserveOnFailure = false } = {}) => {
     try {
-      setLoading(true);
-      const res = await api.get('/mappings');
-      if (res.data.success) {
-        setMappings(res.data.mappings || []);
+      if (!preserveOnFailure) {
+        setLoading(true);
       }
+      const res = await api.get('/mappings');
+      if (res.data?.success) {
+        setMappings(res.data.mappings || []);
+        setRefreshWarning('');
+        return true;
+      }
+      if (preserveOnFailure) {
+        setRefreshWarning(res.data?.message || 'Mapping was saved, but refreshing the active mappings list returned an unexpected response.');
+      }
+      return false;
     } catch (err) {
       console.error('Failed to load faculty mappings:', err);
+      if (preserveOnFailure) {
+        setRefreshWarning(
+          `Mapping operation succeeded, but refreshing the mappings table failed (${formatApiError(err, 'Network error')}). Click Refresh to reload.`
+        );
+      }
+      return false;
     } finally {
-      setLoading(false);
+      if (!preserveOnFailure) {
+        setLoading(false);
+      }
     }
+  };
+
+  const pollJobUntilTerminal = async (jobId) => {
+    if (jobPollAbortRef.current) {
+      jobPollAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    jobPollAbortRef.current = controller;
+
+    const maxWaitMs = 5 * 60 * 1000;
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < maxWaitMs) {
+      if (controller.signal.aborted) {
+        throw new axios.CanceledError('Polling aborted');
+      }
+      const statusRes = await api.get(`/mappings/jobs/${jobId}`, {
+        signal: controller.signal,
+        timeout: API_TIMEOUTS.DEFAULT,
+      });
+      const job = statusRes.data?.data;
+      if (!job) {
+        throw new Error('Background job status payload was empty.');
+      }
+      setActiveJob(job);
+
+      if (['COMPLETED', 'PARTIAL_FAILED', 'FAILED'].includes(job.status)) {
+        return job;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 750));
+    }
+
+    throw new Error('Background mapping job is still processing. Please check Refresh shortly.');
   };
 
   const handleSubjectSelect = (preset) => {
@@ -165,10 +228,13 @@ const FacultyAssignments = () => {
     try {
       setUploading(true);
       setPreviewError('');
+      setRefreshWarning('');
       setSuccessMessage('');
+      setActiveJob(null);
 
       const formData = new FormData();
       formData.append('file', selectedFile);
+      formData.append('uploadMode', uploadMode);
       if (uploadMode === 'single') {
         formData.append('facultyName', facultyName.trim());
         formData.append('subjectName', subjectName.trim());
@@ -177,22 +243,40 @@ const FacultyAssignments = () => {
         formData.append('group', group);
       }
 
-      const res = await api.post('/mappings/upload-preview', formData, {
+      const startRes = await api.post('/mappings/jobs/upload-preview', formData, {
         timeout: API_TIMEOUTS.PDF_UPLOAD,
       });
 
-      if (res.data.success) {
-        if (res.data.isMultiRoster && res.data.mappings && res.data.mappings.length > 0) {
+      let extractionData = startRes.data;
+      if (startRes.data?.success && startRes.data?.data?.jobId) {
+        setActiveJob(startRes.data.data);
+        const completedJob = await pollJobUntilTerminal(startRes.data.data.jobId);
+        if (completedJob.status === 'FAILED') {
+          setPreviewError(completedJob.errorMessage || 'Failed to extract student rosters from PDF.');
+          return;
+        }
+        extractionData = {
+          success: true,
+          isMultiRoster: completedJob.isMultiRoster,
+          summary: completedJob.summary,
+          mappings: completedJob.previewMappings || completedJob.mappings || [],
+          students: (completedJob.previewMappings || []).flatMap((m) => m.students || []),
+        };
+      }
+
+      if (extractionData?.success) {
+        if (extractionData.isMultiRoster && extractionData.mappings && extractionData.mappings.length > 0) {
           setIsMultiRoster(true);
-          setMultiMappings(res.data.mappings);
-          setMultiSummary(res.data.summary);
+          setMultiMappings(extractionData.mappings);
+          setMultiSummary(extractionData.summary);
           setPreviewStudents([]);
         } else {
           setIsMultiRoster(false);
           const extracted =
-            res.data.students ||
-            res.data.data?.students ||
-            (res.data.data?.records || []).map((r, idx) => ({
+            extractionData.students ||
+            extractionData.data?.students ||
+            (extractionData.mappings?.[0]?.students) ||
+            (extractionData.data?.records || []).map((r, idx) => ({
               sNo: r.serialNumber || idx + 1,
               registrationNumber: r.rollNumber,
               studentName: r.studentName,
@@ -207,9 +291,12 @@ const FacultyAssignments = () => {
           }
         }
       } else {
-        setPreviewError(res.data.message || 'Failed to extract student rosters.');
+        setPreviewError(extractionData?.message || 'Failed to extract student rosters.');
       }
     } catch (err) {
+      if (axios.isCancel(err) || err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') {
+        return;
+      }
       console.error('[FacultyAssignments] Upload preview failed:', err);
       setPreviewError(formatApiError(err, 'Failed to extract students from PDF.'));
     } finally {
@@ -238,9 +325,11 @@ const FacultyAssignments = () => {
       return;
     }
 
+    let savedSingle = false;
     try {
       setConfirming(true);
       setPreviewError('');
+      setRefreshWarning('');
 
       const payload = {
         facultyName: facultyName.trim(),
@@ -258,31 +347,79 @@ const FacultyAssignments = () => {
 
       const res = await api.post('/mappings/confirm', payload, { timeout: API_TIMEOUTS.HEAVY_WRITE });
 
-      if (res.data.success) {
+      if (res.data?.success) {
+        savedSingle = true;
         setSuccessMessage(
           `Successfully permanently mapped ${previewStudents.length} students to ${subjectName} (${section}) under ${facultyName}. These students will now load automatically for examinations.`
         );
         setPreviewStudents([]);
         setSelectedFile(null);
-        await fetchMappings();
+      } else {
+        setPreviewError(res.data?.message || 'Failed to confirm faculty mapping.');
       }
     } catch (err) {
       setPreviewError(formatApiError(err, 'Failed to confirm faculty mapping.'));
     } finally {
       setConfirming(false);
     }
+
+    if (savedSingle) {
+      await fetchMappings({ preserveOnFailure: true });
+    }
   };
 
-  // Confirm batch multi mappings
+  const applyCompletedBatchJobResult = (job) => {
+    const savedCount = job.savedMappings?.length || 0;
+    const failedCount = job.failedItems?.length || 0;
+
+    if (job.status === 'COMPLETED') {
+      setSuccessMessage(
+        `Successfully saved ${savedCount} independent subject-wise mappings (${job.totalEnrollments} enrollments across ${job.uniqueStudents} unique students) into MongoDB!`
+      );
+      setIsMultiRoster(false);
+      setMultiMappings([]);
+      setMultiSummary(null);
+      setSelectedFile(null);
+      return true;
+    }
+
+    if (job.status === 'PARTIAL_FAILED') {
+      setSuccessMessage(
+        `Saved ${savedCount} verified mapping(s) safely (${job.totalEnrollments} enrollments). ${failedCount} mapping(s) require attention and can be retried below without duplicating saved records.`
+      );
+      setPreviewError(
+        job.failedItems
+          .slice(0, 5)
+          .map((f) => `${f.subjectCode || f.subjectName} (${f.section || '?'}): ${f.error}`)
+          .join('\n')
+      );
+      return savedCount > 0;
+    }
+
+    setPreviewError(
+      job.errorMessage ||
+        (failedCount > 0
+          ? job.failedItems
+              .slice(0, 5)
+              .map((f) => `${f.subjectCode || f.subjectName} (${f.section || '?'}): ${f.error}`)
+              .join('\n')
+          : 'Failed to save batch mappings.')
+    );
+    return false;
+  };
+
+  // Confirm batch multi mappings using background job workflow
   const handleConfirmBatchMappings = async () => {
     if (multiMappings.length === 0) {
       setPreviewError('No mappings to confirm.');
       return;
     }
 
+    let shouldRefresh = false;
     try {
       setConfirming(true);
       setPreviewError('');
+      setRefreshWarning('');
 
       const payload = {
         mappings: multiMappings,
@@ -290,28 +427,57 @@ const FacultyAssignments = () => {
         sourceFileName: selectedFile ? selectedFile.name : 'Roster.pdf',
       };
 
-      const res = await api.post('/mappings/confirm-batch', payload, { timeout: API_TIMEOUTS.HEAVY_WRITE });
+      const startRes = await api.post('/mappings/jobs/confirm-batch', payload, {
+        timeout: API_TIMEOUTS.DEFAULT,
+      });
 
-      if (res.data.success) {
-        setSuccessMessage(
-          `Successfully saved ${res.data.count} independent subject-wise mappings (${res.data.totalEnrollments} enrollments across ${res.data.uniqueStudents} unique students) into MongoDB! Each faculty and section has its own dedicated student roster.`
-        );
-        setIsMultiRoster(false);
-        setMultiMappings([]);
-        setMultiSummary(null);
-        setSelectedFile(null);
-        await fetchMappings();
+      if (startRes.data?.success && startRes.data?.data?.jobId) {
+        setActiveJob(startRes.data.data);
+        const completedJob = await pollJobUntilTerminal(startRes.data.data.jobId);
+        shouldRefresh = applyCompletedBatchJobResult(completedJob);
       } else {
-        setPreviewError(res.data.message || 'Failed to save batch mappings.');
+        setPreviewError(startRes.data?.message || 'Failed to queue batch confirmation job.');
       }
     } catch (err) {
+      if (axios.isCancel(err) || err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') {
+        return;
+      }
       const errList = err.response?.data?.errors;
       const errMsg = errList && Array.isArray(errList)
         ? `${err.response?.data?.message || 'Validation failed'}:\n${errList.slice(0, 5).join('\n')}`
-        : (err.response?.data?.message || 'Failed to confirm batch mappings.');
+        : formatApiError(err, 'Failed to confirm batch mappings.');
       setPreviewError(errMsg);
     } finally {
       setConfirming(false);
+    }
+
+    if (shouldRefresh) {
+      await fetchMappings({ preserveOnFailure: true });
+    }
+  };
+
+  const handleRetryFailedJob = async () => {
+    if (!activeJob?.jobId || retryingJob) return;
+    let shouldRefresh = false;
+    try {
+      setRetryingJob(true);
+      setPreviewError('');
+      setRefreshWarning('');
+      const res = await api.post(`/mappings/jobs/${activeJob.jobId}/retry`, null, {
+        timeout: API_TIMEOUTS.DEFAULT,
+      });
+      if (res.data?.success && res.data?.data?.jobId) {
+        setActiveJob(res.data.data);
+        const completedJob = await pollJobUntilTerminal(res.data.data.jobId);
+        shouldRefresh = applyCompletedBatchJobResult(completedJob);
+      }
+    } catch (err) {
+      setPreviewError(formatApiError(err, 'Failed to retry failed mappings.'));
+    } finally {
+      setRetryingJob(false);
+    }
+    if (shouldRefresh) {
+      await fetchMappings({ preserveOnFailure: true });
     }
   };
 
@@ -402,13 +568,88 @@ const FacultyAssignments = () => {
       {previewError && (
         <div className="p-4 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 flex items-start shadow-xs">
           <AlertCircle size={18} className="mr-2.5 text-red-600 flex-shrink-0 mt-0.5" />
-          <div className="flex-1 font-medium">{previewError}</div>
+          <div className="flex-1 font-medium whitespace-pre-line">{previewError}</div>
           <button
             onClick={() => setPreviewError('')}
             className="text-red-500 hover:text-red-700 ml-2"
           >
             <X size={14} />
           </button>
+        </div>
+      )}
+
+      {refreshWarning && (
+        <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 flex items-start shadow-xs">
+          <AlertCircle size={18} className="mr-2.5 text-amber-600 flex-shrink-0 mt-0.5" />
+          <div className="flex-1 font-medium">{refreshWarning}</div>
+          <button
+            onClick={() => setRefreshWarning('')}
+            className="text-amber-500 hover:text-amber-700 ml-2"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      {activeJob && (
+        <div className="p-4 bg-white border border-slate-200 rounded-xl shadow-xs space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex items-center space-x-2">
+              <span className="font-bold text-navy-800">
+                Background Job ({activeJob.jobType === 'UPLOAD_PREVIEW' ? 'PDF Extraction' : 'Batch Mapping Save'})
+              </span>
+              <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-slate-100 text-slate-600">
+                ID: {activeJob.jobId}
+              </span>
+              <span
+                className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                  activeJob.status === 'COMPLETED'
+                    ? 'bg-emerald-100 text-emerald-800'
+                    : activeJob.status === 'PARTIAL_FAILED'
+                      ? 'bg-amber-100 text-amber-800'
+                      : activeJob.status === 'FAILED'
+                        ? 'bg-red-100 text-red-700'
+                        : 'bg-blue-100 text-blue-700'
+                }`}
+              >
+                {activeJob.status}
+              </span>
+            </div>
+            <div className="flex items-center space-x-3 text-[11px] font-semibold">
+              <span className="text-emerald-700">Completed: {activeJob.progress?.completed ?? 0}</span>
+              <span className="text-red-600">Failed: {activeJob.progress?.failed ?? 0}</span>
+              <span className="text-slate-600">Pending: {activeJob.progress?.pending ?? 0}</span>
+            </div>
+          </div>
+
+          <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+            <div
+              className={`h-full transition-all duration-300 ${
+                activeJob.status === 'FAILED'
+                  ? 'bg-red-500'
+                  : activeJob.status === 'PARTIAL_FAILED'
+                    ? 'bg-amber-500'
+                    : 'bg-primary'
+              }`}
+              style={{ width: `${Math.min(100, Math.max(5, activeJob.progress?.percent ?? 0))}%` }}
+            />
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600">
+            <span>{activeJob.progress?.currentStage || 'Processing...'}</span>
+            {activeJob.jobType === 'CONFIRM_BATCH' &&
+              (activeJob.failedItems?.length || 0) > 0 &&
+              ['PARTIAL_FAILED', 'FAILED'].includes(activeJob.status) && (
+                <button
+                  type="button"
+                  onClick={handleRetryFailedJob}
+                  disabled={retryingJob}
+                  className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-[11px] transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {retryingJob ? 'Retrying Failed Mappings...' : `Retry Failed (${activeJob.failedItems.length})`}
+                </button>
+              )}
+          </div>
         </div>
       )}
 

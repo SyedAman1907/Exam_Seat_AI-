@@ -633,12 +633,18 @@ class PdfExtractorService {
       'Dr.C.Rama Krishnaiah',
     ];
 
+    const KNOWN_SUBJECT_LOOKUP = new Map(
+      Object.entries(KNOWN_SUBJECTS).map(([key, info]) => [key.replace(/[^a-z0-9]/g, ''), info])
+    );
+    const KNOWN_FACULTY_LOOKUP = new Map(
+      KNOWN_FACULTY_NAMES.map((fac) => [fac.toLowerCase().replace(/[^a-z0-9]/g, ''), fac])
+    );
+
     const formatSubject = (raw) => {
       if (!raw) return { name: 'General Subject', code: '' };
       const norm = raw.toLowerCase().replace(/[^a-z0-9]/g, '');
-      for (const [key, info] of Object.entries(KNOWN_SUBJECTS)) {
-        if (key.replace(/[^a-z0-9]/g, '') === norm) return info;
-      }
+      const matched = KNOWN_SUBJECT_LOOKUP.get(norm);
+      if (matched) return matched;
       const formattedName = raw.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/\s{2,}/g, ' ').trim();
       return { name: formattedName, code: '' };
     };
@@ -646,9 +652,8 @@ class PdfExtractorService {
     const formatFaculty = (raw) => {
       if (!raw) return 'Faculty Member';
       const norm = raw.toLowerCase().replace(/[^a-z0-9]/g, '');
-      for (const fac of KNOWN_FACULTY_NAMES) {
-        if (fac.toLowerCase().replace(/[^a-z0-9]/g, '') === norm) return fac;
-      }
+      const matched = KNOWN_FACULTY_LOOKUP.get(norm);
+      if (matched) return matched;
       return raw
         .replace(/([a-z])([A-Z])/g, '$1 $2')
         .replace(/\bDr([A-Z])/g, 'Dr. $1')
@@ -663,6 +668,11 @@ class PdfExtractorService {
     let totalDuplicatesWithinRosters = 0;
 
     for (let pIdx = 0; pIdx < pageBlocks.length; pIdx++) {
+      // Yield periodically on large multi-page PDFs so concurrent student requests stay responsive
+      if (pIdx > 0 && pIdx % 8 === 0) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+
       const blockText = pageBlocks[pIdx];
       const lines = blockText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
       const headerSlice = lines.slice(0, 16);
@@ -672,10 +682,6 @@ class PdfExtractorService {
       const isNewRoster = /Group\s*[-–]?\s*[AB]/i.test(headerBlock) && /Section/i.test(headerBlock);
 
       if (isNewRoster) {
-        if (currentRoster) {
-          rosters.push(currentRoster);
-        }
-
         // 1. Group & Subject Name
         let group = 'Group A';
         let subjectName = 'General Subject';
@@ -759,36 +765,52 @@ class PdfExtractorService {
           facultyName = options.facultyName || 'Faculty Member';
         }
 
-        // Subject code fallback
+        // Subject code fallback via O(1) lookup map
         if (!subjectCode) {
           const normSubKey = subjectName.toLowerCase().replace(/[^a-z0-9]/g, '');
-          for (const [key, info] of Object.entries(KNOWN_SUBJECTS)) {
-            if (key.replace(/[^a-z0-9]/g, '') === normSubKey) {
-              subjectCode = info.code;
-              break;
-            }
+          const matchedSub = KNOWN_SUBJECT_LOOKUP.get(normSubKey);
+          if (matchedSub) {
+            subjectCode = matchedSub.code;
           }
         }
 
-        currentRoster = {
-          id: `mapping-${rosters.length + 1}`,
-          mappingIndex: rosters.length + 1,
-          subjectName,
-          subjectCode,
-          facultyName,
-          section,
-          group,
-          academicYear,
-          year,
-          semester,
-          program: yearSemester,
-          pages: [pIdx + 1],
-          students: [],
-          duplicateCount: 0,
-          errors: [],
-          warnings: [],
-          isValid: true,
-        };
+        // Handle continuation pages that repeat the exact same subject-faculty-section-group header
+        const isContinuationOfCurrent = Boolean(
+          currentRoster &&
+            currentRoster.section === section &&
+            currentRoster.group === group &&
+            currentRoster.subjectName.toLowerCase() === subjectName.toLowerCase() &&
+            (currentRoster.subjectCode || '') === (subjectCode || '') &&
+            currentRoster.facultyName.toLowerCase() === facultyName.toLowerCase()
+        );
+
+        if (isContinuationOfCurrent) {
+          currentRoster.pages.push(pIdx + 1);
+        } else {
+          if (currentRoster) {
+            rosters.push(currentRoster);
+          }
+          currentRoster = {
+            id: `mapping-${rosters.length + 1}`,
+            mappingIndex: rosters.length + 1,
+            subjectName,
+            subjectCode,
+            facultyName,
+            section,
+            group,
+            academicYear,
+            year,
+            semester,
+            program: yearSemester,
+            pages: [pIdx + 1],
+            students: [],
+            _seenRegs: new Set(),
+            duplicateCount: 0,
+            errors: [],
+            warnings: [],
+            isValid: true,
+          };
+        }
       } else if (currentRoster) {
         currentRoster.pages.push(pIdx + 1);
       }
@@ -808,15 +830,12 @@ class PdfExtractorService {
           let name = match[3] ? match[3].trim().replace(/\s{2,}/g, ' ') : '';
 
           if (currentRoster) {
-            // Check for duplicate ONLY within this same subject-wise mapping
-            const alreadyInThisMapping = currentRoster.students.some(
-              (s) => s.registrationNumber === regNo
-            );
-
-            if (alreadyInThisMapping) {
+            // O(1) duplicate check strictly within this same subject-wise mapping
+            if (currentRoster._seenRegs.has(regNo)) {
               currentRoster.duplicateCount++;
               totalDuplicatesWithinRosters++;
             } else {
+              currentRoster._seenRegs.add(regNo);
               currentRoster.students.push({
                 sNo,
                 registrationNumber: regNo,
@@ -845,6 +864,7 @@ class PdfExtractorService {
     let totalEnrollments = 0;
 
     rosters.forEach((r) => {
+      delete r._seenRegs;
       totalEnrollments += r.students.length;
       r.studentCount = r.students.length;
       sectionsSet.add(r.section);
