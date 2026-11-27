@@ -242,6 +242,7 @@ async function runChecklistTests() {
       );
 
       // 13. Admin Approval and Publication
+      await request('POST', `/api/exams/${groupAExamId}/approve`, {}, adminToken);
       const publishRes = await request('POST', `/api/exams/${groupAExamId}/publish`, {}, adminToken);
       assert(
         publishRes.status === 200 || publishRes.data?.success,

@@ -462,8 +462,10 @@ async function run() {
     // SCENARIO 10: Admin Controlled Edit on Published Exam & Cancel Preserving History
     // -------------------------------------------------------------------------
     console.log('\n--- 10. Published Controlled Admin Edit & Cancel Preserving History ---');
+    const approveRes = await apiReq('POST', `/exams/${reusedExam._id}/approve`, {}, adminToken);
+    assert(approveRes.status === 200, '10a-pre. Admin approves exam cleanly');
     const pubRes = await apiReq('POST', `/exams/${reusedExam._id}/publish`, {}, adminToken);
-    assert(pubRes.status === 200, '10a. Admin approves/publishes exam cleanly');
+    assert(pubRes.status === 200, '10a. Admin publishes approved exam cleanly');
 
     // Simulate active T-20 publication transition to verify PUBLISHED controlled correction workflow
     await Exam.updateOne(
@@ -613,6 +615,7 @@ async function run() {
     // -------------------------------------------------------------------------
     console.log('\n--- 12. Consistent AM/PM Time across PDFs, Excel, Student & Faculty Portals ---');
     // Publish exam2 (01:45 PM - 02:45 PM on 2028-04-10) so we can verify reports & student lookup
+    await apiReq('POST', `/exams/${exam2._id}/approve`, {}, adminToken);
     await apiReq('POST', `/exams/${exam2._id}/publish`, {}, adminToken);
 
     // 12a. Attendance PDF for Section A1

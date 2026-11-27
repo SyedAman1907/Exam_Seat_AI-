@@ -99,6 +99,13 @@ const examSchema = new mongoose.Schema({
   publishedAt: {
     type: Date,
   },
+  publishedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+  },
+  publicationConfirmedAt: {
+    type: Date,
+  },
   lastError: {
     type: String,
     default: '',

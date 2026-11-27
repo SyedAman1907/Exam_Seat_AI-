@@ -350,20 +350,20 @@ async function run() {
     assert.strictEqual(openAvailRes.status, 200);
     assert.strictEqual(openAvailRes.json.available, true);
 
-    // 8d. Strict requirePriorApproval rejects PENDING_REVIEW exam before Admin approval
-    const strictBeforeApprove = await httpRequest(port, {
+    // 8d. Admin attempting to publish a PENDING_REVIEW exam BEFORE approval must fail cleanly (400 REQUIRES_ADMIN_APPROVAL)
+    const publishPendingRes = await httpRequest(port, {
       method: 'POST',
       path: `/api/exams/${examId}/publish`,
       headers: { Authorization: `Bearer ${adminToken}` },
-      body: { requirePriorApproval: true },
+      body: {},
     });
-    assert.strictEqual(strictBeforeApprove.status, 400);
-    assert.strictEqual(strictBeforeApprove.json.code, 'REQUIRES_ADMIN_APPROVAL');
+    assert.strictEqual(publishPendingRes.status, 400);
+    assert.strictEqual(publishPendingRes.json.code, 'REQUIRES_ADMIN_APPROVAL');
 
-    // 8e. Admin Approve & Publish with valid {} JSON body
+    // 8e. Admin approves the examination first (POST /api/exams/:id/approve)
     const approveRes = await httpRequest(port, {
       method: 'POST',
-      path: `/api/exams/${examId}/publish`,
+      path: `/api/exams/${examId}/approve`,
       headers: { Authorization: `Bearer ${adminToken}` },
       body: {},
     });
@@ -372,19 +372,40 @@ async function run() {
     assert.strictEqual(approveRes.json.success, true);
     assert.strictEqual(approveRes.json.data.approvalStatus, 'APPROVED');
 
-    // 8f. Repeated publish once already PUBLISHED must be rejected cleanly (409 ALREADY_PUBLISHED),
-    // and COMPLETED exams must return 400 EXAM_COMPLETED
-    await Exam.findByIdAndUpdate(examId, { $set: { status: 'PUBLISHED', visibilityStatus: 'PUBLISHED' } });
-    const repeatPublishRes = await httpRequest(port, {
+    // 8f. Admin publishes the approved examination (POST /api/exams/:id/publish)
+    const publishRes = await httpRequest(port, {
       method: 'POST',
       path: `/api/exams/${examId}/publish`,
       headers: { Authorization: `Bearer ${adminToken}` },
       body: {},
     });
-    assert.strictEqual(repeatPublishRes.status, 409);
-    assert.strictEqual(repeatPublishRes.json.code, 'ALREADY_PUBLISHED');
+    assert.strictEqual(publishRes.status, 200);
+    assert.strictEqual(publishRes.jsonValid, true);
+    assert.strictEqual(publishRes.json.success, true);
+    assert.ok(publishRes.json.data.publicationConfirmedAt);
 
-    await Exam.findByIdAndUpdate(examId, { $set: { status: 'COMPLETED' } });
+    // 8g. Repeat publish on already published/confirmed exam must be blocked cleanly (409 ALREADY_PUBLISHED),
+    // and CANCELLED / COMPLETED exams must return 400 EXAM_CANCELLED / EXAM_COMPLETED
+    const repeatScheduledRes = await httpRequest(port, {
+      method: 'POST',
+      path: `/api/exams/${examId}/publish`,
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: {},
+    });
+    assert.strictEqual(repeatScheduledRes.status, 409);
+    assert.strictEqual(repeatScheduledRes.json.code, 'ALREADY_PUBLISHED');
+
+    await Exam.findByIdAndUpdate(examId, { $set: { status: 'CANCELLED', approvalStatus: 'CANCELLED' } });
+    const cancelledPublishRes = await httpRequest(port, {
+      method: 'POST',
+      path: `/api/exams/${examId}/publish`,
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: {},
+    });
+    assert.strictEqual(cancelledPublishRes.status, 400);
+    assert.strictEqual(cancelledPublishRes.json.code, 'EXAM_CANCELLED');
+
+    await Exam.findByIdAndUpdate(examId, { $set: { status: 'COMPLETED', approvalStatus: 'APPROVED' } });
     const completedPublishRes = await httpRequest(port, {
       method: 'POST',
       path: `/api/exams/${examId}/publish`,
@@ -393,7 +414,18 @@ async function run() {
     });
     assert.strictEqual(completedPublishRes.status, 400);
     assert.strictEqual(completedPublishRes.json.code, 'EXAM_COMPLETED');
-    await Exam.findByIdAndUpdate(examId, { $set: { status: 'SCHEDULED', visibilityStatus: 'SCHEDULED' } });
+    await Exam.findByIdAndUpdate(examId, { $set: { status: 'SCHEDULED', approvalStatus: 'APPROVED', visibilityStatus: 'SCHEDULED' } });
+
+    // 8h. Refresh dashboard and examination list after publishing; verify sections & students intact
+    const [postPubAll, postPubStats] = await Promise.all([
+      httpRequest(port, { method: 'GET', path: '/api/exams?filter=all', headers: { Authorization: `Bearer ${adminToken}` } }),
+      httpRequest(port, { method: 'GET', path: '/api/dashboard/stats', headers: { Authorization: `Bearer ${adminToken}` } }),
+    ]);
+    assert.strictEqual(postPubAll.status, 200);
+    assert.strictEqual(postPubAll.json.data[0].sectionAllocations.length, 3);
+    assert.strictEqual(postPubAll.json.data[0].studentCount, 216);
+    assert.strictEqual(postPubStats.status, 200);
+    assert.strictEqual(postPubStats.json.data.pendingApprovals, 0);
 
     // 9. Faculty login + scoped examination access + Logout & re-login
     const facLogin = await httpRequest(port, {

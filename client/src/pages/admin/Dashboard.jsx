@@ -48,8 +48,9 @@ const Dashboard = () => {
 
   const [allExams, setAllExams] = useState([]);
 
-  // Modal / Prompt State for Publish, Reject & Cancel
+  // Modal / Prompt State for Approve, Publish, Reject & Cancel
   const [publishModalExam, setPublishModalExam] = useState(null);
+  const [publishModalMode, setPublishModalMode] = useState('publish'); // 'approve' | 'publish'
   const [rejectModalExam, setRejectModalExam] = useState(null);
   const [rejectReason, setRejectReason] = useState('');
   const [cancelModalExam, setCancelModalExam] = useState(null);
@@ -135,10 +136,13 @@ const Dashboard = () => {
 
   const confirmPublish = async () => {
     if (!publishModalExam || publishLockRef.current || actionLoading) return;
+    const isApprove = publishModalMode === 'approve';
     if (!isAdmin) {
       setActionMessage({
         type: 'error',
-        text: 'Only an Administrator is authorized to approve and publish examinations.',
+        text: isApprove
+          ? 'Only an Administrator is authorized to approve examinations.'
+          : 'Only an Administrator is authorized to publish examinations.',
       });
       setPublishModalExam(null);
       return;
@@ -147,7 +151,10 @@ const Dashboard = () => {
     try {
       setActionLoading(true);
       setActionMessage({ type: '', text: '' });
-      const res = await api.post(`/exams/${publishModalExam._id}/publish`, {}, {
+      const endpoint = isApprove
+        ? `/exams/${publishModalExam._id}/approve`
+        : `/exams/${publishModalExam._id}/publish`;
+      const res = await api.post(endpoint, {}, {
         timeout: API_TIMEOUTS.HEAVY_WRITE,
       });
       if (res.data?.success) {
@@ -159,7 +166,11 @@ const Dashboard = () => {
         }
         setActionMessage({
           type: 'success',
-          text: res.data.message || 'Examination approved and published successfully!',
+          text:
+            res.data.message ||
+            (isApprove
+              ? 'Examination approved successfully! Click Publish in Approved Examinations to release per T-20 schedule.'
+              : 'Examination published successfully!'),
         });
         setPublishModalExam(null);
         await fetchAllData();
@@ -167,7 +178,10 @@ const Dashboard = () => {
     } catch (err) {
       setActionMessage({
         type: 'error',
-        text: formatApiError(err, 'Failed to publish examination.'),
+        text: formatApiError(
+          err,
+          isApprove ? 'Failed to approve examination.' : 'Failed to publish examination.'
+        ),
       });
       setPublishModalExam(null);
     } finally {
@@ -373,15 +387,18 @@ const Dashboard = () => {
 
                     {showAdminActions && (
                       <>
-                        {/* Publish Examination Button */}
+                        {/* Approve Pending Examination Button */}
                         <button
-                          onClick={() => setPublishModalExam(exam)}
+                          onClick={() => {
+                            setPublishModalMode('approve');
+                            setPublishModalExam(exam);
+                          }}
                           disabled={actionLoading}
-                          title="Approve and Publish Examination"
-                          className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold transition-colors flex items-center shadow-xs cursor-pointer"
+                          title="Approve Examination"
+                          className="px-2.5 py-1 rounded bg-purple-600 hover:bg-purple-700 text-white text-[11px] font-bold transition-colors flex items-center shadow-xs cursor-pointer"
                         >
-                          <Send size={11} className="mr-1" />
-                          Publish
+                          <CheckCircle2 size={11} className="mr-1" />
+                          Approve
                         </button>
 
                         {/* Reject Examination Button */}
@@ -405,6 +422,27 @@ const Dashboard = () => {
                         </button>
                       </>
                     )}
+
+                    {!showAdminActions &&
+                      isAdmin &&
+                      exam.approvalStatus === 'APPROVED' &&
+                      exam.visibilityStatus !== 'PUBLISHED' &&
+                      !['PUBLISHED', 'ONGOING', 'COMPLETED', 'CANCELLED'].includes(exam.status) &&
+                      !exam.publicationConfirmedAt &&
+                      !exam.publishedBy && (
+                        <button
+                          onClick={() => {
+                            setPublishModalMode('publish');
+                            setPublishModalExam(exam);
+                          }}
+                          disabled={actionLoading}
+                          title="Publish Approved Examination to Student Portal Schedule"
+                          className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold transition-colors flex items-center shadow-xs cursor-pointer"
+                        >
+                          <Send size={11} className="mr-1" />
+                          Publish
+                        </button>
+                      )}
 
                     {!showAdminActions && exam.approvalStatus !== 'CANCELLED' && exam.status !== 'COMPLETED' && (
                       <button
@@ -822,7 +860,7 @@ const Dashboard = () => {
         </div>
       )}
 
-      {/* PUBLISH CONFIRMATION MODAL */}
+      {/* APPROVE / PUBLISH CONFIRMATION MODAL */}
       {publishModalExam && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div
@@ -831,10 +869,18 @@ const Dashboard = () => {
           />
           <div className="relative bg-white rounded-xl shadow-xl border border-emerald-200 max-w-md w-full p-6 space-y-4">
             <h3 className="text-sm font-bold text-navy-800">
-              Approve &amp; Publish — {publishModalExam.subjectName}
+              {publishModalMode === 'approve' ? 'Approve Examination' : 'Publish Approved Examination'} — {publishModalExam.subjectName}
             </h3>
             <p className="text-xs text-slate-600">
-              Are you sure you want to approve and publish <strong>{publishModalExam.examName || publishModalExam.subjectName}</strong> ({publishModalExam.examDate}, {formatExamTimeRange(publishModalExam)})?
+              {publishModalMode === 'approve' ? (
+                <>
+                  Approve <strong>{publishModalExam.examName || publishModalExam.subjectName}</strong> ({publishModalExam.examDate}, {formatExamTimeRange(publishModalExam)}) so an Administrator can publish it?
+                </>
+              ) : (
+                <>
+                  Publish <strong>{publishModalExam.examName || publishModalExam.subjectName}</strong> ({publishModalExam.examDate}, {formatExamTimeRange(publishModalExam)}) to the Student Portal T-20 release schedule?
+                </>
+              )}
             </p>
             <div className="flex justify-end space-x-2 pt-2 border-t border-slate-100">
               <button
@@ -847,11 +893,21 @@ const Dashboard = () => {
               </button>
               <button
                 type="button"
-                disabled={actionLoading}
+                disabled={actionLoading || !isAdmin}
                 onClick={confirmPublish}
-                className="px-4 py-1.5 rounded-lg text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 cursor-pointer"
+                className={`px-4 py-1.5 rounded-lg text-xs font-bold text-white disabled:opacity-50 cursor-pointer ${
+                  publishModalMode === 'approve'
+                    ? 'bg-purple-600 hover:bg-purple-700'
+                    : 'bg-emerald-600 hover:bg-emerald-700'
+                }`}
               >
-                {actionLoading ? 'Publishing...' : 'Confirm Publish'}
+                {actionLoading
+                  ? publishModalMode === 'approve'
+                    ? 'Approving...'
+                    : 'Publishing...'
+                  : publishModalMode === 'approve'
+                    ? 'Confirm Approve'
+                    : 'Confirm Publish'}
               </button>
             </div>
           </div>

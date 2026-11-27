@@ -290,11 +290,17 @@ async function runE2EAudit() {
     assert.strictEqual(regenAttempt.status, 400, 'Regeneration on locked allocation must be rejected with 400');
   });
 
-  // 12. Publish Allocation for Student Portal
-  await step(12, 'Publish Allocation (POST /api/exams/:id/publish)', async () => {
+  // 12. Approve & Publish Allocation for Student Portal
+  await step(12, 'Approve & Publish Allocation (POST /api/exams/:id/publish)', async () => {
+    await fetch(`${BASE_URL}/exams/${examId}/approve`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${authToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
     const res = await fetch(`${BASE_URL}/exams/${examId}/publish`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${authToken}` },
+      headers: { Authorization: `Bearer ${authToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
     });
     const data = await res.json();
     assert.strictEqual(res.status, 200);

@@ -426,6 +426,7 @@ async function run() {
   );
 
   // 14. Admin approves & publishes -> Faculty cannot directly delete published exam, can submit cancel request
+  await apiReq('POST', `/exams/${createdExamId}/approve`, {}, adminToken);
   const adminPublishRes = await apiReq('POST', `/exams/${createdExamId}/publish`, {}, adminToken);
   const facDeletePublished = await apiReq(
     'DELETE',

@@ -1809,40 +1809,104 @@ exports.requestCancelExam = async (req, res) => {
   }
 };
 
+function logPublishDiagnostic(level, req, { examId = null, exam = null, failingFunction = null, reason = null, error = null } = {}) {
+  const payload = {
+    requestId: req?.requestId || 'none',
+    endpoint: req?.originalUrl || '/api/exams/:id/publish',
+    method: req?.method || 'POST',
+    userRole: req?.user?.role || 'unauthenticated',
+    examId: examId ? String(examId) : (req?.params?.id ? String(req.params.id) : null),
+    currentStatus: exam?.status || null,
+    approvalStatus: exam?.approvalStatus || null,
+    visibilityStatus: exam?.visibilityStatus || null,
+    ...(failingFunction ? { failingFunction } : {}),
+    ...(reason ? { reason } : {}),
+    ...(error?.stack ? { stack: error.stack } : {}),
+  };
+  if (level === 'error') {
+    console.error('[Exam Publish Diagnostic]', payload);
+  } else {
+    console.warn('[Exam Publish Diagnostic]', payload);
+  }
+}
+
 // @desc    Admin manual approval (marks exam APPROVED & schedules T-20 release without forcing immediate publish)
 // @route   POST /api/exams/:id/approve
 // @access  Private (Admin Only)
 exports.approveExam = async (req, res) => {
+  let exam = null;
   try {
     if (!req.user || req.user.role !== 'admin') {
+      logPublishDiagnostic('warn', req, {
+        failingFunction: 'approveExam.authorize',
+        reason: 'Forbidden: non-admin user attempted to approve examination',
+      });
       return res.status(403).json({
         success: false,
         code: 'FORBIDDEN_APPROVE',
+        requestId: req.requestId,
         message: 'Only an administrator can approve examinations.',
       });
     }
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      logPublishDiagnostic('warn', req, {
+        failingFunction: 'approveExam.validateId',
+        reason: 'Invalid ObjectId for approval',
+      });
       return res.status(400).json({
         success: false,
         code: 'INVALID_EXAM_ID',
+        requestId: req.requestId,
         message: 'Invalid examination ID.',
       });
     }
 
-    const exam = await Exam.findById(req.params.id);
+    exam = await Exam.findById(req.params.id);
     if (!exam) {
-      return res.status(404).json({ success: false, message: 'Examination not found.' });
+      return res.status(404).json({
+        success: false,
+        code: 'EXAM_NOT_FOUND',
+        requestId: req.requestId,
+        message: 'Examination not found.',
+      });
     }
     if (exam.approvalStatus === 'CANCELLED' || exam.status === 'CANCELLED') {
-      return res.status(400).json({ success: false, code: 'EXAM_CANCELLED', message: 'Cannot approve a cancelled examination.' });
+      return res.status(400).json({
+        success: false,
+        code: 'EXAM_CANCELLED',
+        requestId: req.requestId,
+        message: 'Cannot approve a cancelled examination.',
+      });
     }
     if (exam.status === 'COMPLETED') {
-      return res.status(400).json({ success: false, code: 'EXAM_COMPLETED', message: 'Cannot approve a completed examination.' });
+      return res.status(400).json({
+        success: false,
+        code: 'EXAM_COMPLETED',
+        requestId: req.requestId,
+        message: 'Cannot approve a completed examination.',
+      });
+    }
+    if (exam.approvalStatus === 'REJECTED') {
+      return res.status(400).json({
+        success: false,
+        code: 'EXAM_REJECTED',
+        requestId: req.requestId,
+        message: 'Rejected examinations cannot be approved without revision.',
+      });
+    }
+    if (exam.status === 'DRAFT' || exam.approvalStatus === 'DRAFT') {
+      return res.status(400).json({
+        success: false,
+        code: 'EXAM_DRAFT',
+        requestId: req.requestId,
+        message: 'Draft examinations must be submitted for review before Admin approval.',
+      });
     }
     if (exam.approvalStatus === 'APPROVED') {
       return res.status(200).json({
         success: true,
         alreadyApproved: true,
+        requestId: req.requestId,
         message: 'Examination is already approved.',
         data: exam,
       });
@@ -1850,127 +1914,195 @@ exports.approveExam = async (req, res) => {
 
     const now = new Date();
     const publicationTime = exam.publicationTime || new Date((exam.startDateTime || now).getTime() - 20 * 60 * 1000);
-    exam.approvalStatus = 'APPROVED';
-    exam.approvedBy = req.user._id;
-    exam.approvedByName = req.user.name;
-    exam.approvedAt = now;
-    exam.publicationTime = publicationTime;
-    if (!['PUBLISHED', 'ONGOING'].includes(exam.status)) {
-      exam.visibilityStatus = 'SCHEDULED';
-      exam.status = 'SCHEDULED';
-    }
-    await exam.save();
 
-    if (exam.currentAllocationId) {
-      await Allocation.findByIdAndUpdate(exam.currentAllocationId, {
-        $set: { status: exam.status === 'PUBLISHED' ? 'PUBLISHED' : 'SCHEDULED' },
-      });
-    }
+    await runWithOptionalTransaction(async (session) => {
+      exam.approvalStatus = 'APPROVED';
+      exam.approvedBy = req.user._id;
+      exam.approvedByName = req.user.name;
+      exam.approvedAt = now;
+      exam.publicationTime = publicationTime;
+      if (!['PUBLISHED', 'ONGOING'].includes(exam.status)) {
+        exam.visibilityStatus = 'SCHEDULED';
+        exam.status = 'SCHEDULED';
+      }
+      await exam.save(session ? { session } : undefined);
 
-    await AuditLog.create({
-      action: 'EXAM_APPROVED',
-      performedBy: req.user._id,
-      performedByName: req.user.name,
-      examId: exam._id,
-      details: {
-        examName: exam.examName,
-        subjectCode: exam.subjectCode,
-        publicationTime,
-      },
+      if (exam.currentAllocationId) {
+        await Allocation.updateOne(
+          { _id: exam.currentAllocationId },
+          { $set: { status: exam.status === 'PUBLISHED' ? 'PUBLISHED' : 'SCHEDULED' } },
+          session ? { session } : undefined
+        );
+      }
+
+      await AuditLog.create(
+        [
+          {
+            action: 'EXAM_APPROVED',
+            performedBy: req.user._id,
+            performedByName: req.user.name,
+            examId: exam._id,
+            details: {
+              examName: exam.examName,
+              subjectCode: exam.subjectCode,
+              publicationTime,
+            },
+          },
+        ],
+        session ? { session } : undefined
+      );
     });
 
     portalCache.invalidatePortalCache(exam._id);
     return res.status(200).json({
       success: true,
-      message: 'Examination approved cleanly. Ready for scheduled or manual publication.',
+      requestId: req.requestId,
+      message: 'Examination approved by Admin. You can now publish it to the Student Portal release schedule.',
       data: exam,
     });
   } catch (error) {
-    console.error('[Approve Exam Error]:', error);
-    return res.status(500).json({ success: false, message: error?.message || 'Failed to approve examination.' });
+    logPublishDiagnostic('error', req, {
+      examId: req.params.id,
+      exam,
+      failingFunction: 'approveExam.persist',
+      reason: error?.message,
+      error,
+    });
+    return res.status(500).json({
+      success: false,
+      code: 'APPROVE_ERROR',
+      requestId: req.requestId,
+      message: error?.message || 'Failed to approve examination.',
+    });
   }
 };
 
-// @desc    Admin manual review & publish examination (Requirements 5 & 6)
+// @desc    Admin manual publish examination (requires prior Admin approval; preserves T-20 schedule)
 // @route   POST /api/exams/:id/publish
 // @access  Private (Admin Only)
 exports.publishExam = async (req, res) => {
+  let exam = null;
+  let currentStage = 'publishExam.init';
   try {
     // 1. Authorize: Only administrator can publish
+    currentStage = 'publishExam.authorize';
     if (!req.user || req.user.role !== 'admin') {
+      logPublishDiagnostic('warn', req, {
+        failingFunction: currentStage,
+        reason: 'Forbidden: non-admin user attempted to publish examination',
+      });
       return res.status(403).json({
         success: false,
         code: 'FORBIDDEN_PUBLISH',
-        message: 'Only an administrator can approve and publish examinations. Faculty cannot publish.',
+        requestId: req.requestId,
+        message: 'Only an administrator can publish examinations. Exam Incharge and Faculty cannot publish.',
       });
     }
 
+    currentStage = 'publishExam.validateId';
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      logPublishDiagnostic('warn', req, {
+        failingFunction: currentStage,
+        reason: 'Invalid examination ID',
+      });
       return res.status(400).json({
         success: false,
         code: 'INVALID_EXAM_ID',
+        requestId: req.requestId,
         message: 'Invalid examination ID. Please select a valid examination before publishing.',
       });
     }
 
-    const exam = await Exam.findById(req.params.id);
+    currentStage = 'publishExam.loadExam';
+    exam = await Exam.findById(req.params.id);
     if (!exam) {
-      return res.status(404).json({ success: false, message: 'Examination not found.' });
+      logPublishDiagnostic('warn', req, {
+        failingFunction: currentStage,
+        reason: 'Examination record not found',
+      });
+      return res.status(404).json({
+        success: false,
+        code: 'EXAM_NOT_FOUND',
+        requestId: req.requestId,
+        message: 'Examination not found.',
+      });
     }
 
+    currentStage = 'publishExam.validateLifecycle';
     if (exam.approvalStatus === 'CANCELLED' || exam.status === 'CANCELLED') {
+      logPublishDiagnostic('warn', req, { exam, failingFunction: currentStage, reason: 'Exam cancelled' });
       return res.status(400).json({
         success: false,
         code: 'EXAM_CANCELLED',
-        message: 'Cannot publish a cancelled examination.',
+        requestId: req.requestId,
+        message: 'Cancelled examinations cannot be published.',
       });
     }
 
     if (exam.status === 'COMPLETED') {
+      logPublishDiagnostic('warn', req, { exam, failingFunction: currentStage, reason: 'Exam completed' });
       return res.status(400).json({
         success: false,
         code: 'EXAM_COMPLETED',
-        message: 'Cannot publish a completed examination. Historical examination records are preserved.',
+        requestId: req.requestId,
+        message: 'Completed examinations cannot be published. Historical examination records are preserved.',
       });
     }
 
-    if (exam.visibilityStatus === 'PUBLISHED' || exam.status === 'PUBLISHED' || exam.status === 'ONGOING') {
+    if (
+      exam.visibilityStatus === 'PUBLISHED' ||
+      exam.status === 'PUBLISHED' ||
+      exam.status === 'ONGOING' ||
+      Boolean(exam.publicationConfirmedAt) ||
+      Boolean(exam.publishedBy)
+    ) {
+      logPublishDiagnostic('warn', req, { exam, failingFunction: currentStage, reason: 'Already published or confirmed' });
       return res.status(409).json({
         success: false,
         code: 'ALREADY_PUBLISHED',
-        message: 'This examination is already published to students and cannot be published repeatedly.',
+        requestId: req.requestId,
+        message: 'This examination has already been published and cannot be published again.',
       });
     }
 
     if (exam.status === 'DRAFT' || exam.approvalStatus === 'DRAFT') {
+      logPublishDiagnostic('warn', req, { exam, failingFunction: currentStage, reason: 'Exam in draft' });
       return res.status(400).json({
         success: false,
         code: 'EXAM_DRAFT',
-        message: 'Draft examinations must be submitted for review before publication.',
+        requestId: req.requestId,
+        message: 'Draft examinations must be submitted for review and approved by an Admin before publication.',
       });
     }
 
     if (exam.approvalStatus === 'REJECTED') {
+      logPublishDiagnostic('warn', req, { exam, failingFunction: currentStage, reason: 'Exam rejected' });
       return res.status(400).json({
         success: false,
         code: 'EXAM_REJECTED',
-        message: 'Rejected examinations cannot be published. Please revise and resubmit for review.',
+        requestId: req.requestId,
+        message: 'Rejected examinations cannot be published. Please revise and resubmit for Admin approval.',
       });
     }
 
-    if (req.body?.requirePriorApproval === true && exam.approvalStatus !== 'APPROVED') {
+    if (exam.approvalStatus !== 'APPROVED') {
+      logPublishDiagnostic('warn', req, { exam, failingFunction: currentStage, reason: 'Pending Admin approval required before publish' });
       return res.status(400).json({
         success: false,
         code: 'REQUIRES_ADMIN_APPROVAL',
-        message: 'Pending examinations must be approved by an Admin before publication.',
+        requestId: req.requestId,
+        message: 'Pending review examinations cannot be published. An Administrator must approve the examination first.',
       });
     }
 
     // 2. Pre-publication Validations (Requirement 5)
+    currentStage = 'publishExam.validateDetails';
     // a. Examination details complete
     if (!exam.examName || !exam.subjectName || !exam.subjectCode || !exam.examDate || !exam.startTime || !exam.endTime || !exam.classroomId) {
       return res.status(400).json({
         success: false,
+        code: 'INCOMPLETE_EXAM_DETAILS',
+        requestId: req.requestId,
         message: 'Publication failed: Examination details are incomplete.',
       });
     }
@@ -1979,22 +2111,29 @@ exports.publishExam = async (req, res) => {
     if (!exam.studentCount || exam.studentCount <= 0) {
       return res.status(400).json({
         success: false,
+        code: 'EMPTY_STUDENT_ROSTER',
+        requestId: req.requestId,
         message: 'Publication failed: Student roster is invalid or contains 0 candidates.',
       });
     }
 
     // c. Seating allocation exists
+    currentStage = 'publishExam.validateAllocation';
     if (!exam.currentAllocationId) {
       return res.status(400).json({
         success: false,
+        code: 'MISSING_ALLOCATION',
+        requestId: req.requestId,
         message: 'Publication failed: Seating allocation has not been generated for this examination.',
       });
     }
 
     const allocation = await Allocation.findById(exam.currentAllocationId);
-    if (!allocation || !allocation.students || allocation.students.length === 0) {
+    if (!allocation || !Array.isArray(allocation.students) || allocation.students.length === 0) {
       return res.status(400).json({
         success: false,
+        code: 'EMPTY_ALLOCATION',
+        requestId: req.requestId,
         message: 'Publication failed: Seating allocation contains zero assigned students.',
       });
     }
@@ -2008,12 +2147,16 @@ exports.publishExam = async (req, res) => {
       if (assignedSeats.has(seatKey)) {
         return res.status(400).json({
           success: false,
+          code: 'DUPLICATE_SEAT_COLLISION',
+          requestId: req.requestId,
           message: `Publication failed: Duplicate seat collision detected on seat ${st.seatId}.`,
         });
       }
       if (assignedRegs.has(st.registrationNumber)) {
         return res.status(400).json({
           success: false,
+          code: 'DUPLICATE_STUDENT_SEAT',
+          requestId: req.requestId,
           message: `Publication failed: Candidate ${st.registrationNumber} is assigned to multiple seats.`,
         });
       }
@@ -2022,34 +2165,49 @@ exports.publishExam = async (req, res) => {
     }
 
     // e. Classroom capacity check
+    currentStage = 'publishExam.validateClassroom';
     const classroom = await Classroom.findById(exam.classroomId);
     if (!classroom && !exam.isParentExam) {
-      return res.status(400).json({ success: false, message: 'Publication failed: Classroom record not found.' });
+      return res.status(400).json({
+        success: false,
+        code: 'CLASSROOM_NOT_FOUND',
+        requestId: req.requestId,
+        message: 'Publication failed: Classroom record not found.',
+      });
     }
     if (!exam.isParentExam && classroom && exam.studentCount > classroom.totalCapacity) {
       return res.status(400).json({
         success: false,
+        code: 'CLASSROOM_CAPACITY_EXCEEDED',
+        requestId: req.requestId,
         message: `Publication failed: Classroom capacity exceeded (${exam.studentCount} students > ${classroom.totalCapacity} capacity).`,
       });
     }
 
     // f. Verify Attendance PDF generation works
+    currentStage = 'publishExam.verifyAttendancePdf';
     try {
       await ReportService.generateAttendancePDF(exam, allocation, classroom);
     } catch (pdfErr) {
+      logPublishDiagnostic('warn', req, { exam, failingFunction: currentStage, reason: pdfErr?.message, error: pdfErr });
       return res.status(400).json({
         success: false,
+        code: 'ATTENDANCE_PDF_ERROR',
+        requestId: req.requestId,
         message: `Publication failed: Attendance PDF generation error: ${pdfErr.message}`,
       });
     }
 
     // 3. Compute publication time: exactly 20 minutes before start time (Asia/Kolkata)
+    currentStage = 'publishExam.computeWindow';
     const publicationTime = exam.publicationTime || new Date(exam.startDateTime.getTime() - 20 * 60 * 1000);
     const now = new Date();
 
     if (exam.endDateTime && now >= exam.endDateTime) {
       return res.status(400).json({
         success: false,
+        code: 'EXAM_CONCLUDED',
+        requestId: req.requestId,
         message: 'Publication failed: Examination has already concluded.',
       });
     }
@@ -2057,78 +2215,85 @@ exports.publishExam = async (req, res) => {
     if (exam.startDateTime && now >= exam.startDateTime) {
       return res.status(400).json({
         success: false,
+        code: 'EXAM_ALREADY_STARTED',
+        requestId: req.requestId,
         message: 'Examination has already started. Immediate automatic student exposure requires an explicit administrative review decision.',
       });
     }
 
-    // Separate Approval and Visibility States (Requirement 5, 6, 7)
-    exam.approvalStatus = 'APPROVED';
-    exam.approvedBy = req.user._id;
-    exam.approvedByName = req.user.name;
-    exam.approvedAt = now;
-    exam.publicationTime = publicationTime;
-
     const isImmediatePublish = now >= publicationTime;
 
-    if (isImmediatePublish) {
-      exam.visibilityStatus = 'PUBLISHED';
-      exam.publishedAt = now;
-      exam.status = 'PUBLISHED';
-      allocation.status = 'PUBLISHED';
-      allocation.publishedAt = now;
-    } else {
-      exam.visibilityStatus = 'SCHEDULED';
-      exam.status = 'SCHEDULED';
-      allocation.status = 'SCHEDULED';
-    }
+    currentStage = 'publishExam.persist';
+    await runWithOptionalTransaction(async (session) => {
+      exam.publicationTime = publicationTime;
+      exam.publishedBy = req.user._id;
+      exam.publicationConfirmedAt = now;
 
-    await exam.save();
-    await allocation.save();
+      if (isImmediatePublish) {
+        exam.visibilityStatus = 'PUBLISHED';
+        exam.publishedAt = now;
+        exam.status = 'PUBLISHED';
+        allocation.status = 'PUBLISHED';
+        allocation.publishedAt = now;
+      } else {
+        exam.visibilityStatus = 'SCHEDULED';
+        exam.status = 'SCHEDULED';
+        allocation.status = 'SCHEDULED';
+      }
+      allocation.publishedBy = req.user._id;
 
-    await AuditLog.create({
-      action: 'EXAM_APPROVED',
-      performedBy: req.user._id,
-      performedByName: req.user.name,
-      examId: exam._id,
-      allocationVersion: allocation.version,
-      details: {
-        examName: exam.examName,
-        subjectCode: exam.subjectCode,
-        section: exam.section,
-        studentCount: exam.studentCount,
-        publicationTime,
-        visibilityStatus: exam.visibilityStatus,
-        isImmediatePublish,
-      },
+      await exam.save(session ? { session } : undefined);
+      await allocation.save(session ? { session } : undefined);
+
+      await AuditLog.create(
+        [
+          {
+            action: 'EXAM_PUBLISHED',
+            performedBy: req.user._id,
+            performedByName: req.user.name,
+            examId: exam._id,
+            allocationVersion: allocation.version,
+            details: {
+              examName: exam.examName,
+              subjectCode: exam.subjectCode,
+              section: exam.section,
+              studentCount: exam.studentCount,
+              publicationTime,
+              visibilityStatus: exam.visibilityStatus,
+              isImmediatePublish,
+              publishedAt: isImmediatePublish ? now : null,
+            },
+          },
+        ],
+        session ? { session } : undefined
+      );
     });
-
-    if (isImmediatePublish) {
-      await AuditLog.create({
-        action: 'EXAM_PUBLISHED',
-        performedBy: req.user._id,
-        performedByName: req.user.name,
-        examId: exam._id,
-        allocationVersion: allocation.version,
-        details: {
-          examName: exam.examName,
-          publishedAt: now,
-        },
-      });
-    }
 
     portalCache.invalidatePortalCache(exam._id);
 
     res.status(200).json({
       success: true,
+      requestId: req.requestId,
       message: isImmediatePublish
-        ? 'Examination approved and published immediately to Student Portal.'
-        : `Examination approved by Admin. Student seating will automatically become visible at ${publicationTime.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })} (exactly 20 minutes before examination start).`,
+        ? 'Examination published immediately to Student Portal.'
+        : `Approved examination published to release schedule. Student seating will become visible at ${publicationTime.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })} (exactly 20 minutes before examination start).`,
       data: exam,
       allocation,
     });
   } catch (error) {
-    console.error('[Publish Exam Error]:', error);
-    res.status(500).json({ success: false, message: error?.message || 'Failed to approve and publish examination.' });
+    logPublishDiagnostic('error', req, {
+      examId: req.params?.id,
+      exam,
+      failingFunction: currentStage,
+      reason: error?.message,
+      error,
+    });
+    res.status(500).json({
+      success: false,
+      code: 'PUBLISH_ERROR',
+      requestId: req.requestId,
+      message: error?.message || 'Failed to publish examination.',
+    });
   }
 };
 

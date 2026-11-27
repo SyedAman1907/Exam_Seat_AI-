@@ -414,6 +414,15 @@ app.use((err, req, res, next) => {
   );
 
   if (err.type === 'entity.parse.failed' || (err instanceof SyntaxError && statusCode === 400 && 'body' in err)) {
+    console.error('[JSON Body Parse Failure]', {
+      requestId: req.requestId || 'none',
+      endpoint: req.originalUrl,
+      method: req.method,
+      userRole: req.user?.role || 'pre-auth',
+      failingFunction: 'express.json',
+      reason: err.message,
+      stack: err.stack,
+    });
     return res.status(400).json({
       success: false,
       code: 'INVALID_JSON_PAYLOAD',

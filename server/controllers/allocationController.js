@@ -757,38 +757,51 @@ exports.publishAllocation = async (req, res) => {
 
     const exam = await Exam.findById(examId);
     if (!exam) {
-      return res.status(404).json({ success: false, message: 'Examination not found.' });
+      return res.status(404).json({ success: false, code: 'EXAM_NOT_FOUND', requestId: req.requestId, message: 'Examination not found.' });
     }
 
     if (exam.status === 'CANCELLED' || exam.approvalStatus === 'CANCELLED') {
-      return res.status(400).json({ success: false, code: 'EXAM_CANCELLED', message: 'Cannot publish a cancelled examination.' });
+      return res.status(400).json({ success: false, code: 'EXAM_CANCELLED', requestId: req.requestId, message: 'Cannot publish a cancelled examination.' });
     }
     if (exam.status === 'COMPLETED') {
-      return res.status(400).json({ success: false, code: 'EXAM_COMPLETED', message: 'Cannot publish a completed examination.' });
+      return res.status(400).json({ success: false, code: 'EXAM_COMPLETED', requestId: req.requestId, message: 'Cannot publish a completed examination.' });
     }
-    if (exam.visibilityStatus === 'PUBLISHED' || exam.status === 'PUBLISHED' || exam.status === 'ONGOING') {
+    if (
+      exam.visibilityStatus === 'PUBLISHED' ||
+      exam.status === 'PUBLISHED' ||
+      exam.status === 'ONGOING' ||
+      Boolean(exam.publicationConfirmedAt) ||
+      Boolean(exam.publishedBy)
+    ) {
       return res.status(409).json({
         success: false,
         code: 'ALREADY_PUBLISHED',
-        message: 'This examination has already been published to students and cannot be published repeatedly.',
+        requestId: req.requestId,
+        message: 'This examination has already been published and cannot be published again.',
       });
     }
     if (exam.status === 'DRAFT' || exam.approvalStatus === 'DRAFT') {
-      return res.status(400).json({ success: false, code: 'EXAM_DRAFT', message: 'Draft examinations cannot be published before submission and approval.' });
+      return res.status(400).json({ success: false, code: 'EXAM_DRAFT', requestId: req.requestId, message: 'Draft examinations cannot be published before submission and approval.' });
     }
     if (exam.approvalStatus === 'REJECTED') {
-      return res.status(400).json({ success: false, code: 'EXAM_REJECTED', message: 'Rejected examinations cannot be published.' });
+      return res.status(400).json({ success: false, code: 'EXAM_REJECTED', requestId: req.requestId, message: 'Rejected examinations cannot be published.' });
+    }
+    if (exam.approvalStatus !== 'APPROVED') {
+      return res.status(400).json({
+        success: false,
+        code: 'REQUIRES_ADMIN_APPROVAL',
+        requestId: req.requestId,
+        message: 'Pending review examinations cannot be published. An Administrator must approve the examination first.',
+      });
     }
 
     const now = new Date();
     const publicationTime = exam.publicationTime || new Date((exam.startDateTime || now).getTime() - 20 * 60 * 1000);
     const isImmediate = now >= publicationTime;
 
-    exam.approvalStatus = 'APPROVED';
-    exam.approvedBy = req.user._id;
-    exam.approvedByName = req.user.name;
-    exam.approvedAt = now;
     exam.publicationTime = publicationTime;
+    exam.publishedBy = req.user._id;
+    exam.publicationConfirmedAt = now;
 
     if (isImmediate) {
       exam.visibilityStatus = 'PUBLISHED';

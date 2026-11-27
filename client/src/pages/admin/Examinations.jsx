@@ -192,6 +192,7 @@ const Examinations = () => {
   const [cancelReason, setCancelReason] = useState('');
   const [cancelling, setCancelling] = useState(false);
   const [publishModalExam, setPublishModalExam] = useState(null);
+  const [publishModalMode, setPublishModalMode] = useState('publish'); // 'approve' | 'publish'
   const [publishModalError, setPublishModalError] = useState('');
   const [publishing, setPublishing] = useState(false);
   const [rejectModalExam, setRejectModalExam] = useState(null);
@@ -950,8 +951,11 @@ const Examinations = () => {
 
   const confirmPublishExam = async () => {
     if (!publishModalExam || publishLockRef.current || publishing) return;
+    const isApproveAction = publishModalMode === 'approve';
     if (!isAdmin) {
-      const msg = 'Only an Administrator is authorized to approve and publish examinations.';
+      const msg = isApproveAction
+        ? 'Only an Administrator is authorized to approve examinations.'
+        : 'Only an Administrator is authorized to publish examinations.';
       setPublishModalError(msg);
       setActionError(msg);
       return;
@@ -959,32 +963,43 @@ const Examinations = () => {
 
     const targetExam = publishModalExam;
     publishLockRef.current = true;
-    let publishedOk = false;
+    let actionOk = false;
 
     try {
       setPublishing(true);
       setActionError('');
       setPublishModalError('');
-      const res = await api.post(`/exams/${targetExam._id}/publish`, {}, {
+      const endpoint = isApproveAction
+        ? `/exams/${targetExam._id}/approve`
+        : `/exams/${targetExam._id}/publish`;
+      const res = await api.post(endpoint, {}, {
         timeout: API_TIMEOUTS.HEAVY_WRITE,
       });
       if (res.data?.success) {
-        publishedOk = true;
+        actionOk = true;
         const updatedExam = res.data.data;
         if (updatedExam?._id) {
           setExams((prev) =>
             prev.map((ex) => (String(ex._id) === String(updatedExam._id) ? updatedExam : ex))
           );
         }
-        if (targetExam.approvalStatus === 'PENDING_REVIEW') {
+        if (isApproveAction && targetExam.approvalStatus === 'PENDING_REVIEW') {
           setPendingReviewCount((prev) => Math.max(0, prev - 1));
         }
-        setSuccessBanner(res.data.message || 'Examination approved and scheduled for publication.');
+        setSuccessBanner(
+          res.data.message ||
+            (isApproveAction
+              ? 'Examination approved by Admin. Click Publish to schedule/release to Student Portal.'
+              : 'Examination published according to configured T-20 schedule.')
+        );
         setPublishModalExam(null);
         setPublishModalError('');
       }
     } catch (err) {
-      const msg = formatApiError(err, 'Failed to publish examination.');
+      const msg = formatApiError(
+        err,
+        isApproveAction ? 'Failed to approve examination.' : 'Failed to publish examination.'
+      );
       setPublishModalError(msg);
       setActionError(msg);
     } finally {
@@ -992,7 +1007,7 @@ const Examinations = () => {
       setPublishing(false);
     }
 
-    if (publishedOk) {
+    if (actionOk) {
       await fetchExams(null, { preserveOnFailure: true, background: true });
     }
   };
@@ -1593,17 +1608,18 @@ const Examinations = () => {
                         {downloadingKey === `seat-${exam._id}` ? 'Downloading...' : 'Seating Blueprint'}
                       </button>
 
-                      {/* Admin Approval Controls */}
+                      {/* Admin Approval & Publication Controls */}
                       {isAdmin && exam.approvalStatus === 'PENDING_REVIEW' && (
                         <>
                           <button
                             type="button"
                             onClick={() => {
                               setPublishModalError('');
+                              setPublishModalMode('approve');
                               setPublishModalExam(exam);
                             }}
                             title="Admin: Approve Examination"
-                            className="inline-flex items-center px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 text-xs font-bold shadow-xs cursor-pointer"
+                            className="inline-flex items-center px-3 py-1.5 rounded-lg bg-purple-600 text-white hover:bg-purple-700 text-xs font-bold shadow-xs cursor-pointer"
                           >
                             <CheckCircle2 size={13} className="mr-1.5" />
                             Approve
@@ -1621,6 +1637,27 @@ const Examinations = () => {
                           </button>
                         </>
                       )}
+
+                      {isAdmin &&
+                        exam.approvalStatus === 'APPROVED' &&
+                        exam.visibilityStatus !== 'PUBLISHED' &&
+                        !['PUBLISHED', 'ONGOING', 'COMPLETED', 'CANCELLED'].includes(exam.status) &&
+                        !exam.publicationConfirmedAt &&
+                        !exam.publishedBy && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPublishModalError('');
+                              setPublishModalMode('publish');
+                              setPublishModalExam(exam);
+                            }}
+                            title="Admin: Publish Approved Examination"
+                            className="inline-flex items-center px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 text-xs font-bold shadow-xs cursor-pointer"
+                          >
+                            <CheckCircle2 size={13} className="mr-1.5" />
+                            Publish
+                          </button>
+                        )}
 
                       {isAdmin && exam.status !== 'COMPLETED' && exam.status !== 'CANCELLED' && exam.approvalStatus !== 'CANCELLED' && (
                         <>
@@ -2797,7 +2834,7 @@ const Examinations = () => {
         </div>
       )}
 
-      {/* APPROVE & PUBLISH CONFIRMATION MODAL */}
+      {/* APPROVE OR PUBLISH CONFIRMATION MODAL */}
       {publishModalExam && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div
@@ -2811,13 +2848,23 @@ const Examinations = () => {
           />
           <div className="relative bg-white rounded-2xl shadow-2xl border border-emerald-200 max-w-md w-full p-5 space-y-4">
             <div className="flex items-start space-x-3">
-              <div className="p-2.5 rounded-xl bg-emerald-100 text-emerald-700 flex-shrink-0">
+              <div className={`p-2.5 rounded-xl flex-shrink-0 ${publishModalMode === 'approve' ? 'bg-purple-100 text-purple-700' : 'bg-emerald-100 text-emerald-700'}`}>
                 <CheckCircle2 size={20} />
               </div>
               <div>
-                <h3 className="text-sm font-bold text-navy-900">Approve &amp; Publish Examination?</h3>
+                <h3 className="text-sm font-bold text-navy-900">
+                  {publishModalMode === 'approve' ? 'Approve Examination?' : 'Publish Approved Examination?'}
+                </h3>
                 <p className="text-xs text-slate-600 mt-1">
-                  Approving <strong>{publishModalExam.examName || publishModalExam.subjectName}</strong> ({publishModalExam.examDate}, {formatExamTimeRange(publishModalExam)}) marks it Approved / Scheduled. Student seating visibility automatically opens at scheduled start time for the configured window.
+                  {publishModalMode === 'approve' ? (
+                    <>
+                      Approving <strong>{publishModalExam.examName || publishModalExam.subjectName}</strong> ({publishModalExam.examDate}, {formatExamTimeRange(publishModalExam)}) marks it Approved by Admin so it can be published to the Student Portal T-20 release schedule.
+                    </>
+                  ) : (
+                    <>
+                      Publishing <strong>{publishModalExam.examName || publishModalExam.subjectName}</strong> ({publishModalExam.examDate}, {formatExamTimeRange(publishModalExam)}) activates student seating visibility strictly per the configured T-20 schedule window.
+                    </>
+                  )}
                 </p>
               </div>
             </div>
@@ -2843,9 +2890,19 @@ const Examinations = () => {
                 type="button"
                 disabled={publishing || !isAdmin}
                 onClick={confirmPublishExam}
-                className="px-4 py-2 rounded-lg text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 cursor-pointer"
+                className={`px-4 py-2 rounded-lg text-xs font-bold text-white disabled:opacity-50 cursor-pointer ${
+                  publishModalMode === 'approve'
+                    ? 'bg-purple-600 hover:bg-purple-700'
+                    : 'bg-emerald-600 hover:bg-emerald-700'
+                }`}
               >
-                {publishing ? 'Publishing...' : 'Approve & Schedule'}
+                {publishing
+                  ? publishModalMode === 'approve'
+                    ? 'Approving...'
+                    : 'Publishing...'
+                  : publishModalMode === 'approve'
+                    ? 'Confirm Approval'
+                    : 'Confirm Publish'}
               </button>
             </div>
           </div>
