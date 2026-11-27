@@ -94,13 +94,13 @@ const Dashboard = () => {
         api.get('/exams?filter=all', { signal: controller.signal }),
       ]);
 
-      if (statsRes.data.success) {
+      if (statsRes?.data?.success && statsRes.data.data) {
         setStats(statsRes.data.data);
       }
-      if (mappingsRes.data.success) {
+      if (mappingsRes?.data?.success) {
         setMappings(mappingsRes.data.mappings || []);
       }
-      if (examsRes.data.success) {
+      if (examsRes?.data?.success) {
         setAllExams(examsRes.data.data || []);
       }
     } catch (err) {
@@ -110,7 +110,7 @@ const Dashboard = () => {
       console.error('Error fetching dashboard data:', err);
       setActionMessage({
         type: 'error',
-        text: err.response?.data?.message || err.message || 'Failed to retrieve examination dashboard records from server.',
+        text: formatApiError(err, 'Failed to retrieve examination dashboard records from server.'),
       });
     } finally {
       if (abortControllerRef.current === controller) {

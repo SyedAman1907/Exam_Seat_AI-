@@ -11,6 +11,7 @@ const SeatingService = require('../services/seatingService');
 const ReportService = require('../services/reportService');
 const schedulerService = require('../services/schedulerService');
 const classroomMappingService = require('../services/classroomMappingService');
+const portalCache = require('../services/portalCache');
 const {
   isFacultyMappingOwner,
   filterMappingsForUser,
@@ -261,15 +262,43 @@ exports.getExams = async (req, res) => {
       return attachExamPermissions(obj, req.user);
     });
 
+    // Optional backward-compatible pagination when page or limit query params are provided
+    const hasPagination = req.query.page !== undefined || req.query.limit !== undefined;
+    const total = enhanced.length;
+    let responseRows = enhanced;
+    let paginationMeta = null;
+
+    if (hasPagination) {
+      const pageNum = Math.max(1, parseInt(req.query.page, 10) || 1);
+      const limitNum = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 25));
+      const totalPages = Math.max(1, Math.ceil(total / limitNum));
+      const safePage = Math.min(pageNum, totalPages);
+      const startIdx = (safePage - 1) * limitNum;
+      responseRows = enhanced.slice(startIdx, startIdx + limitNum);
+      paginationMeta = {
+        total,
+        page: safePage,
+        limit: limitNum,
+        totalPages,
+      };
+    }
+
     res.status(200).json({
       success: true,
-      count: enhanced.length,
+      count: responseRows.length,
+      total,
+      ...(paginationMeta && {
+        page: paginationMeta.page,
+        limit: paginationMeta.limit,
+        totalPages: paginationMeta.totalPages,
+        pagination: paginationMeta,
+      }),
       todayDate: todayIso,
-      data: enhanced,
+      data: responseRows,
     });
   } catch (error) {
-    console.error('[Delete Exam Error]:', error);
-    res.status(500).json({ success: false, message: error.message });
+    console.error('[Get Exams Error]:', error);
+    res.status(500).json({ success: false, message: error?.message || 'Failed to retrieve examinations.' });
   }
 };
 
@@ -351,8 +380,8 @@ exports.getExamById = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('[Delete Exam Error]:', error);
-    res.status(500).json({ success: false, message: error.message });
+    console.error('[Get Exam By Id Error]:', error);
+    res.status(500).json({ success: false, message: error?.message || 'Failed to retrieve examination details.' });
   }
 };
 
@@ -722,6 +751,8 @@ exports.createExam = async (req, res) => {
       },
       ipAddress: req.ip,
     });
+
+    portalCache.invalidatePortalCache(exam._id);
 
     res.status(201).json({
       success: true,
@@ -1550,6 +1581,8 @@ exports.updateExam = async (req, res) => {
       },
     });
 
+    portalCache.invalidatePortalCache(exam._id);
+
     res.status(200).json({
       success: true,
       message: isPublishedOrLocked
@@ -1678,6 +1711,8 @@ exports.deleteExam = async (req, res) => {
       },
     }).catch((auditErr) => console.warn('[AuditLog] Async exam delete log warning:', auditErr?.message));
 
+    portalCache.invalidatePortalCache(exam._id);
+
     res.status(200).json({
       success: true,
       deletedExamId: String(exam._id),
@@ -1749,8 +1784,8 @@ exports.requestCancelExam = async (req, res) => {
       data: attachExamPermissions(exam.toObject(), req.user),
     });
   } catch (error) {
-    console.error('[Delete Exam Error]:', error);
-    res.status(500).json({ success: false, message: error.message });
+    console.error('[Request Cancel Exam Error]:', error);
+    res.status(500).json({ success: false, message: error?.message || 'Failed to submit cancellation request.' });
   }
 };
 
@@ -1926,6 +1961,8 @@ exports.publishExam = async (req, res) => {
       });
     }
 
+    portalCache.invalidatePortalCache(exam._id);
+
     res.status(200).json({
       success: true,
       message: isImmediatePublish
@@ -1935,8 +1972,8 @@ exports.publishExam = async (req, res) => {
       allocation,
     });
   } catch (error) {
-    console.error('[Delete Exam Error]:', error);
-    res.status(500).json({ success: false, message: error.message });
+    console.error('[Publish Exam Error]:', error);
+    res.status(500).json({ success: false, message: error?.message || 'Failed to approve and publish examination.' });
   }
 };
 
@@ -1970,6 +2007,8 @@ exports.rejectExam = async (req, res) => {
       examId: exam._id,
       details: { reason: exam.rejectionReason },
     });
+
+    portalCache.invalidatePortalCache(exam._id);
 
     res.status(200).json({ success: true, message: 'Examination has been rejected.', data: exam });
   } catch (err) {
@@ -2052,6 +2091,8 @@ exports.cancelExam = async (req, res) => {
       },
       ipAddress: req.ip,
     });
+
+    portalCache.invalidatePortalCache(exam._id);
 
     res.status(200).json({
       success: true,
@@ -2817,6 +2858,8 @@ exports.createCentralizedExam = async (req, res) => {
       },
     }).catch((auditErr) => console.warn('[AuditLog] Async exam log warning:', auditErr?.message));
 
+    portalCache.invalidatePortalCache(parentExam._id);
+
     res.status(201).json({
       success: true,
       message: isDraft
@@ -2827,10 +2870,10 @@ exports.createCentralizedExam = async (req, res) => {
     });
   } catch (error) {
     console.error('[Create Centralized Exam Error]:', error);
-    res.status(error.statusCode || 500).json({
+    res.status(error?.statusCode || 500).json({
       success: false,
-      message: error.message,
-      ...(error.conflictDetails && { conflictDetails: error.conflictDetails }),
+      message: error?.message || 'Failed to create centralized examination.',
+      ...(error?.conflictDetails && { conflictDetails: error.conflictDetails }),
     });
   }
 };

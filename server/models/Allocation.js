@@ -192,6 +192,11 @@ const allocationSchema = new mongoose.Schema({
 
 allocationSchema.index({ examId: 1, version: 1 }, { unique: true });
 allocationSchema.index({ examId: 1, isCurrent: 1, 'students.registrationNumber': 1 });
+allocationSchema.index(
+  { examId: 1, isCurrent: 1, status: 1, 'students.registrationNumber': 1 },
+  { name: 'alloc_lookup_idx' }
+);
+allocationSchema.index({ isCurrent: 1, status: 1, examId: 1 }, { name: 'alloc_current_status_idx' });
 allocationSchema.index({ 'students.registrationNumber': 1 });
 
 module.exports = mongoose.model('Allocation', allocationSchema);

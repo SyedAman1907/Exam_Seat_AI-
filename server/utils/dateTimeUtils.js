@@ -2,6 +2,13 @@
  * ExamSeat AI — Centralized Date and Time Utilities for Asia/Kolkata (+05:30)
  */
 
+const KOLKATA_DATE_FORMATTER = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Kolkata',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
 /**
  * Current instant (reference helper)
  */
@@ -34,12 +41,7 @@ function addDaysToIsoDate(isoDate, days = 1) {
   const dt = new Date(`${norm}T00:00:00+05:30`);
   if (isNaN(dt.getTime())) return norm;
   dt.setUTCDate(dt.getUTCDate() + days);
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Kolkata',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(dt);
+  return KOLKATA_DATE_FORMATTER.format(dt);
 }
 
 /**
@@ -345,25 +347,13 @@ function getTodayKolkataDate(customDate) {
   if (customDate) {
     const parsed = new Date(customDate);
     if (!isNaN(parsed.getTime())) {
-      const formatter = new Intl.DateTimeFormat('en-CA', {
-        timeZone: 'Asia/Kolkata',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-      });
-      const iso = formatter.format(parsed);
+      const iso = KOLKATA_DATE_FORMATTER.format(parsed);
       const [yyyy, mm, dd] = iso.split('-');
       return { iso, dmy: `${dd}/${mm}/${yyyy}` };
     }
   }
 
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Kolkata',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  });
-  const iso = formatter.format(new Date()); // 'YYYY-MM-DD'
+  const iso = KOLKATA_DATE_FORMATTER.format(new Date()); // 'YYYY-MM-DD'
   const [yyyy, mm, dd] = iso.split('-');
   return {
     iso,

@@ -30,13 +30,20 @@ async function startServer() {
       console.log(`  Environment: ${process.env.NODE_ENV || 'development'}`);
       console.log(`====================================================`);
     });
+    server.keepAliveTimeout = 65000;
+    server.headersTimeout = 66000;
+    server.requestTimeout = 120000;
 
     // 5. Initialize background examination scheduling service and recovery hook
-    schedulerService.start();
+    if (process.env.ENABLE_SCHEDULER !== 'false') {
+      schedulerService.start();
+    } else {
+      console.log('[Scheduler] Disabled on this instance (ENABLE_SCHEDULER=false).');
+    }
     connectDB.onReconnect(async () => {
       try {
         await ensureExamIndexes();
-      } catch (e) {}
+      } catch (e) { }
       if (typeof schedulerService.onDatabaseReconnect === 'function') {
         await schedulerService.onDatabaseReconnect();
       }

@@ -8,28 +8,50 @@ if (typeof rateLimit !== 'function') {
   throw new TypeError(`express-rate-limit must resolve to a function (received ${typeof rateLimit})`);
 }
 
-// Rate limiter for student seat lookup (prevent brute force student scraping)
+// Per-(IP, registrationNumber) limiter prevents scraping a single roll number while allowing
+// 500+ distinct students sharing a campus Wi-Fi / NAT IP to look up seats simultaneously.
 const studentLookupLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 30, // Limit each IP to 30 lookups per 15 minutes
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const ip = req.ip || 'unknown';
+    const regNo = String(req.body?.registrationNumber || '').trim().toUpperCase();
+    return regNo ? `${ip}:${regNo}` : `${ip}:lookup`;
+  },
+  message: {
+    success: false,
+    code: 'RATE_LIMITED',
+    message: 'Too many lookups for this registration number. Please wait a moment and try again.',
+  },
+});
+
+// High-ceiling IP burst protection for student portal endpoints during peak 500+ student load
+const studentPortalBurstLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 3000,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
     success: false,
-    message: 'Too many search requests from this IP address. Please wait 15 minutes before trying again.',
+    code: 'RATE_LIMITED',
+    message: 'Too many requests from this network right now. Please retry in a minute.',
   },
 });
 
-// General auth rate limiter
+// General auth rate limiter (successful logins do not consume failed-attempt quota)
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 20,
+  max: 60,
+  skipSuccessfulRequests: true,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
     success: false,
-    message: 'Too many login attempts. Please wait 15 minutes before trying again.',
+    code: 'RATE_LIMITED',
+    message: 'Too many failed login attempts. Please wait 15 minutes before trying again.',
   },
 });
 
-module.exports = { studentLookupLimiter, authLimiter };
+module.exports = { studentLookupLimiter, studentPortalBurstLimiter, authLimiter };

@@ -81,8 +81,13 @@ async function run() {
     assert.strictEqual(activeExamsPreflight.headers['access-control-allow-origin'], prodOrigin);
     assert.strictEqual(activeExamsPreflight.headers['access-control-allow-credentials'], undefined);
 
-    // 3. Development origins (5173 & 5174) and env-configured origin
-    for (const devOrigin of ['http://localhost:5173', 'http://localhost:5174', 'https://custom-preview.vercel.app']) {
+    // 3. Development origins (5173 & 5174), second Vercel origin, and env-configured origin
+    for (const devOrigin of [
+      'https://examseatai.vercel.app',
+      'http://localhost:5173',
+      'http://localhost:5174',
+      'https://custom-preview.vercel.app',
+    ]) {
       const res = await sendRequest(port, {
         method: 'OPTIONS',
         path: '/api/auth/login',

@@ -89,7 +89,7 @@ const Allocations = () => {
   const fetchExams = useCallback(async () => {
     try {
       const res = await api.get('/exams');
-      if (res.data.success && res.data.data.length > 0) {
+      if (res.data?.success && Array.isArray(res.data.data) && res.data.data.length > 0) {
         setExams(res.data.data);
         setSelectedExamId((prev) => prev || res.data.data[0]._id);
       }

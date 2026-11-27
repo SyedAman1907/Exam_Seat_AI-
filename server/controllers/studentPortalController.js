@@ -6,6 +6,7 @@ const Student = require('../models/Student');
 const StudentEnrollment = require('../models/StudentEnrollment');
 const publicationScheduler = require('../scheduler');
 const classroomMappingService = require('../services/classroomMappingService');
+const portalCache = require('../services/portalCache');
 const { isDbConnectivityError } = require('../config/db');
 const {
   normalizeDateStr,
@@ -48,9 +49,9 @@ function resolveExamWindow(ex, effectiveNow) {
         Boolean(ex.allowOvernight) ||
         Boolean(
           ex.startDateTime &&
-            ex.endDateTime &&
-            new Date(ex.endDateTime).getTime() > new Date(ex.startDateTime).getTime() &&
-            formatIsoDateKolkata(new Date(ex.endDateTime)) > normalizeDateStr(ex.examDate)
+          ex.endDateTime &&
+          new Date(ex.endDateTime).getTime() > new Date(ex.startDateTime).getTime() &&
+          formatIsoDateKolkata(new Date(ex.endDateTime)) > normalizeDateStr(ex.examDate)
         );
       const range = parseExamDateRange(ex.examDate, ex.startTime, ex.endTime, null, {
         allowOvernight: storedOvernight,
@@ -65,7 +66,7 @@ function resolveExamWindow(ex, effectiveNow) {
   if (!startDateTime && ex.examDate && ex.startTime) {
     try {
       startDateTime = parseKolkataDateTime(ex.examDate, ex.startTime);
-    } catch (e) {}
+    } catch (e) { }
   }
   if (!startDateTime && ex.startDateTime) {
     const parsed = new Date(ex.startDateTime);
@@ -75,7 +76,7 @@ function resolveExamWindow(ex, effectiveNow) {
   if (!endDateTime && ex.examDate && ex.endTime) {
     try {
       endDateTime = parseKolkataDateTime(ex.examDate, ex.endTime);
-    } catch (e) {}
+    } catch (e) { }
   }
   if (!endDateTime && ex.endDateTime) {
     const parsed = new Date(ex.endDateTime);
@@ -138,6 +139,7 @@ exports.getActiveExams = async (req, res) => {
     }
 
     const effectiveNow = getEffectiveNow(req);
+    const bypassCache = Boolean(req.headers['x-test-timestamp'] || req.query.date);
 
     // Synchronize overdue transitions synchronously under simulated test clock; otherwise check lean docs first
     if (req.headers['x-test-timestamp']) {
@@ -149,19 +151,24 @@ exports.getActiveExams = async (req, res) => {
     const [ty, tm, td] = tomorrowIso.split('-');
     const tomorrowDmy = `${td}/${tm}/${ty}`;
 
-    // Query today's published, approved, non-cancelled/non-completed exams (plus midnight-boundary exams opening tonight)
-    const candidateExams = await Exam.find({
-      isDeleted: { $ne: true },
-      approvalStatus: 'APPROVED',
-      status: { $in: ['APPROVED', 'PUBLISHED', 'ONGOING', 'SCHEDULED'] },
-      visibilityStatus: { $nin: ['NOT_SCHEDULED', 'EXPIRED'] },
-      examDate: { $in: [iso, dmy, tomorrowIso, tomorrowDmy] },
-    })
-      .select(
-        'examName subjectName subjectCode examDate startTime endTime startDateTime endDateTime allowOvernight session department section sections group academicYear studentCount approvalStatus visibilityStatus status'
-      )
-      .sort({ startDateTime: 1, startTime: 1, session: 1, section: 1 })
-      .lean();
+    // Query today's published, approved, non-cancelled/non-completed exams (cached 5s per IST day)
+    const candidateExams = await portalCache.getScheduleCandidates(
+      `active:${iso}`,
+      () =>
+        Exam.find({
+          isDeleted: { $ne: true },
+          approvalStatus: 'APPROVED',
+          status: { $in: ['APPROVED', 'PUBLISHED', 'ONGOING', 'SCHEDULED'] },
+          visibilityStatus: { $nin: ['NOT_SCHEDULED', 'EXPIRED'] },
+          examDate: { $in: [iso, dmy, tomorrowIso, tomorrowDmy] },
+        })
+          .select(
+            'examName subjectName subjectCode examDate startTime endTime startDateTime endDateTime allowOvernight session department section sections group academicYear studentCount approvalStatus visibilityStatus status'
+          )
+          .sort({ startDateTime: 1, startTime: 1, session: 1, section: 1 })
+          .lean(),
+      bypassCache
+    );
 
     // Keep today's exams, plus tomorrow's early-morning exams ONLY if their 20-min early access opens today in IST
     const todayExams = candidateExams.filter((ex) => {
@@ -340,6 +347,7 @@ exports.lookupSeat = async (req, res) => {
 
     const effectiveNow = getEffectiveNow(req);
     const hasTestClock = Boolean(req.headers['x-test-timestamp']);
+    const bypassCache = hasTestClock || Boolean(date);
     if (hasTestClock) {
       await publicationScheduler.completeOverdueExams(effectiveNow);
     }
@@ -349,7 +357,7 @@ exports.lookupSeat = async (req, res) => {
     const [ty, tm, td] = tomorrowIso.split('-');
     const tomorrowDmy = `${td}/${tm}/${ty}`;
 
-    // 2. Query student existence and matching examinations in parallel
+    // 2. Query matching examinations (cached 5s for burst lookups; bypassed under test clock/date)
     const examQuery = {
       isDeleted: { $ne: true },
       approvalStatus: { $nin: ['CANCELLED', 'REJECTED', 'DRAFT'] },
@@ -364,24 +372,13 @@ exports.lookupSeat = async (req, res) => {
     const baseExamFields =
       'examName subjectName subjectCode examDate startTime endTime startDateTime endDateTime allowOvernight session department section group academicYear facultyName status approvalStatus visibilityStatus sectionAllocations.section sectionAllocations.group sectionAllocations.roomNumber sectionAllocations.classroomName sectionAllocations.facultyName';
 
-    const initialQueries = [
-      Exam.find(examQuery).select(baseExamFields).lean(),
-    ];
-
-    if (examId) {
-      initialQueries.push(
-        Allocation.findOne({
-          examId,
-          isCurrent: true,
-          status: { $ne: 'DRAFT' },
-          'students.registrationNumber': regNo,
-        })
-          .select({ section: 1, group: 1, status: 1, 'students.$': 1 })
-          .lean()
-      );
-    }
-
-    const [candidateExams, preloadedAllocation] = await Promise.all(initialQueries);
+    const cacheKey = examId ? `lookup:${iso}:${examId}` : `lookup:${iso}:all`;
+    const candidateExams = await portalCache.getScheduleCandidates(
+      cacheKey,
+      () => Exam.find(examQuery).select(baseExamFields).lean(),
+      bypassCache
+    );
+    const preloadedAllocation = null;
 
     const todayExams = candidateExams.filter((ex) => {
       if (examId && ex._id.toString() === examId.toString()) return true;
@@ -518,7 +515,7 @@ exports.lookupSeat = async (req, res) => {
       });
     }
 
-    // RULE 3: Inside [studentAccessTime, endDateTime) -> Permit Seat Lookup!
+    // RULE 3: Inside [studentAccessTime, windowCloseTime) -> Read-only Seat Lookup!
     let studentMatch = null;
     let studentSection = 'A1';
     let assignedFaculty = targetExam.facultyName || 'Department Faculty';
@@ -526,27 +523,57 @@ exports.lookupSeat = async (req, res) => {
     let classroomName = 'ET BLOCK 3010';
     let inferredGroup = targetExam.group || 'Group A';
 
-    // Use preloaded positional $ Allocation doc when available, otherwise fetch positional $ only
-    const allocation =
-      preMatchedAlloc ||
-      (await Allocation.findOne({
-        examId: targetExam._id,
-        isCurrent: true,
-        status: { $ne: 'DRAFT' },
-        'students.registrationNumber': regNo,
-      })
-        .select({ section: 1, group: 1, status: 1, 'students.$': 1 })
-        .lean());
+    // Use cached O(1) read-only seat index per exam when not bypassed, falling back to positional $ query
+    const cachedSeatIndex = await portalCache.getExamSeatIndex(
+      targetExam._id,
+      async () => {
+        const allocDoc = await Allocation.findOne({
+          examId: targetExam._id,
+          isCurrent: true,
+          status: { $ne: 'DRAFT' },
+        })
+          .select('section group status students')
+          .lean();
 
-    if (allocation) {
-      studentMatch = allocation.students?.[0] || null;
+        if (!allocDoc || !Array.isArray(allocDoc.students)) {
+          return null;
+        }
+        const byRegNo = new Map();
+        for (const st of allocDoc.students) {
+          const key = String(st.registrationNumber || '').trim().toUpperCase();
+          if (key) {
+            byRegNo.set(key, st);
+          }
+        }
+        return {
+          section: allocDoc.section,
+          group: allocDoc.group,
+          status: allocDoc.status,
+          byRegNo,
+        };
+      },
+      bypassCache
+    );
+
+    if (cachedSeatIndex) {
+      studentMatch = cachedSeatIndex.byRegNo.get(regNo) || null;
       if (studentMatch) {
-        studentSection = studentMatch.section || allocation.section || 'A1';
+        studentSection = studentMatch.section || cachedSeatIndex.section || 'A1';
         const secAlloc = (targetExam.sectionAllocations || []).find((sa) => sa.section === studentSection);
         roomNumber = secAlloc?.roomNumber || studentMatch.roomNumber || classroomMappingService.getRoomNumberForSection(studentSection) || '3010';
         classroomName = secAlloc?.classroomName || studentMatch.classroomName || `ET BLOCK ${roomNumber}`;
         assignedFaculty = secAlloc?.facultyName || studentMatch.facultyName || targetExam.facultyName || 'Department Faculty';
-        inferredGroup = studentMatch.group || secAlloc?.group || allocation.group || (['A1', 'A2', 'A3'].includes(studentSection) ? 'Group A' : 'Group B');
+        inferredGroup = studentMatch.group || secAlloc?.group || cachedSeatIndex.group || (['A1', 'A2', 'A3'].includes(studentSection) ? 'Group A' : 'Group B');
+      }
+    } else if (preMatchedAlloc) {
+      studentMatch = preMatchedAlloc.students?.[0] || null;
+      if (studentMatch) {
+        studentSection = studentMatch.section || preMatchedAlloc.section || 'A1';
+        const secAlloc = (targetExam.sectionAllocations || []).find((sa) => sa.section === studentSection);
+        roomNumber = secAlloc?.roomNumber || studentMatch.roomNumber || classroomMappingService.getRoomNumberForSection(studentSection) || '3010';
+        classroomName = secAlloc?.classroomName || studentMatch.classroomName || `ET BLOCK ${roomNumber}`;
+        assignedFaculty = secAlloc?.facultyName || studentMatch.facultyName || targetExam.facultyName || 'Department Faculty';
+        inferredGroup = studentMatch.group || secAlloc?.group || preMatchedAlloc.group || (['A1', 'A2', 'A3'].includes(studentSection) ? 'Group A' : 'Group B');
       }
     }
 

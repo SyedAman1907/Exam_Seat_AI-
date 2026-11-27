@@ -39,6 +39,7 @@ const StudentSeatFinder = () => {
   const prevUnlockStateRef = useRef(null);
   const scheduleAbortRef = useRef(null);
   const lookupAbortRef = useRef(null);
+  const lastLookupRef = useRef({ key: '', at: 0 });
   const isFetchingScheduleRef = useRef(false);
 
   const fetchActiveExams = useCallback(async ({ force = false } = {}) => {
@@ -180,6 +181,8 @@ const StudentSeatFinder = () => {
 
   const handleLookup = async (e) => {
     e.preventDefault();
+    if (loading) return;
+
     const cleanedRegNo = registrationNumber.trim().toUpperCase();
     if (!cleanedRegNo) {
       setError('Please enter a valid registration number.');
@@ -201,6 +204,17 @@ const StudentSeatFinder = () => {
       return;
     }
 
+    const targetExamId = selectedExamId || (activeExams.length === 1 ? activeExams[0]._id : undefined);
+    const lookupKey = `${cleanedRegNo}:${targetExamId || 'auto'}`;
+    if (
+      result &&
+      result.registrationNumber === cleanedRegNo &&
+      lastLookupRef.current.key === lookupKey &&
+      Date.now() - lastLookupRef.current.at < 2000
+    ) {
+      return;
+    }
+
     if (lookupAbortRef.current) {
       lookupAbortRef.current.abort();
     }
@@ -216,7 +230,7 @@ const StudentSeatFinder = () => {
         '/student/lookup',
         {
           registrationNumber: cleanedRegNo,
-          examId: selectedExamId || (activeExams.length === 1 ? activeExams[0]._id : undefined),
+          examId: targetExamId,
         },
         {
           signal: controller.signal,
@@ -228,6 +242,7 @@ const StudentSeatFinder = () => {
         if (res.data.data.serverNow) {
           setServerClockOffset(new Date(res.data.data.serverNow).getTime() - Date.now());
         }
+        lastLookupRef.current = { key: lookupKey, at: Date.now() };
         setResult(res.data.data);
       } else {
         setError(res.data?.message || 'Unable to retrieve seating information. Please try again.');
@@ -249,7 +264,9 @@ const StudentSeatFinder = () => {
         err.code === 'ERR_NETWORK' ||
         status >= 500;
 
-      if (isServerOrNetworkFailure) {
+      if (status === 429) {
+        setError(serverMsg || 'Too many lookup requests. Please wait a few seconds and try again.');
+      } else if (isServerOrNetworkFailure) {
         setError('Unable to retrieve seating information. Please try again.');
       } else if (status === 404) {
         setError(serverMsg || 'No published seating record found.');
@@ -596,11 +613,13 @@ const StudentSeatFinder = () => {
                           ? 'Seating Not Published'
                           : error.includes('become available at') || error.includes('20 minutes before') || error.includes('available at') || error.includes('start time')
                             ? 'Access Scheduled'
-                            : error.includes('Unable to retrieve seating information')
-                              ? 'Server Error'
-                              : error.includes('valid registration number')
-                                ? 'Invalid Registration Number'
-                                : 'No Seating Record Found'}
+                              : error.includes('Too many')
+                                ? 'Too Many Requests'
+                                : error.includes('Unable to retrieve seating information')
+                                  ? 'Server Error'
+                                  : error.includes('valid registration number')
+                                    ? 'Invalid Registration Number'
+                                    : 'No Seating Record Found'}
                     </span>
                     <p className="font-medium text-xs leading-relaxed break-words">{error}</p>
                   </div>

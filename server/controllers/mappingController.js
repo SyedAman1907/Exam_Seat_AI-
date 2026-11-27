@@ -929,12 +929,38 @@ exports.getMappings = async (req, res) => {
       .lean();
 
     const mappings = filterMappingsForUser(req.user, rawMappings);
+    const total = mappings.length;
+    const hasPagination = req.query.page !== undefined || req.query.limit !== undefined;
+    let responseRows = mappings;
+    let paginationMeta = null;
+
+    if (hasPagination) {
+      const pageNum = Math.max(1, parseInt(req.query.page, 10) || 1);
+      const limitNum = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 25));
+      const totalPages = Math.max(1, Math.ceil(total / limitNum));
+      const safePage = Math.min(pageNum, totalPages);
+      const startIdx = (safePage - 1) * limitNum;
+      responseRows = mappings.slice(startIdx, startIdx + limitNum);
+      paginationMeta = {
+        total,
+        page: safePage,
+        limit: limitNum,
+        totalPages,
+      };
+    }
 
     res.status(200).json({
       success: true,
-      count: mappings.length,
-      data: mappings,
-      mappings,
+      count: responseRows.length,
+      total,
+      ...(paginationMeta && {
+        page: paginationMeta.page,
+        limit: paginationMeta.limit,
+        totalPages: paginationMeta.totalPages,
+        pagination: paginationMeta,
+      }),
+      data: responseRows,
+      mappings: responseRows,
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

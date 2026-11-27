@@ -7,6 +7,7 @@ const AuditLog = require('../models/AuditLog');
 const FacultyMapping = require('../models/FacultyMapping');
 const StudentClassificationService = require('../services/studentClassificationService');
 const SeatingService = require('../services/seatingService');
+const portalCache = require('../services/portalCache');
 const { isSameSessionPolarity } = require('../utils/dateTimeUtils');
 
 /**
@@ -499,6 +500,8 @@ exports.generateAllocation = async (req, res) => {
       ipAddress: req.ip,
     });
 
+    portalCache.invalidatePortalCache(exam._id);
+
     res.status(201).json({
       success: true,
       message: `Section-wise Allocation Version ${newVersion} generated successfully across ${classroomSummaries.length} classroom(s).`,
@@ -792,6 +795,8 @@ exports.publishAllocation = async (req, res) => {
       ipAddress: req.ip,
     });
 
+    portalCache.invalidatePortalCache(exam._id);
+
     res.status(200).json({
       success: true,
       message: isImmediate
@@ -836,6 +841,8 @@ exports.unlockAllocation = async (req, res) => {
       details: { reason: req.body.reason || 'Faculty initiated modification' },
       ipAddress: req.ip,
     });
+
+    portalCache.invalidatePortalCache(examId);
 
     res.status(200).json({
       success: true,

@@ -83,13 +83,13 @@ export const downloadProtectedReport = async (
       // Check if server returned JSON or HTML error payload wrapped inside a Blob
       if (responseContentType.includes('application/json') || responseContentType.includes('text/html')) {
         const text = await rawBlob.text();
-        let parsed = {};
+        let parsed = null;
         try {
-          parsed = JSON.parse(text);
+          parsed = text && text.trim() ? JSON.parse(text) : null;
         } catch {
-          parsed = {};
+          parsed = null;
         }
-        throw new Error(parsed.message || 'Server returned an unexpected response instead of a downloadable document.');
+        throw new Error(parsed?.message || 'Server returned an unexpected response instead of a downloadable document.');
       }
 
       const filename = parseFilenameFromDisposition(res.headers?.['content-disposition'], fallbackFilename);
@@ -132,8 +132,8 @@ export const downloadProtectedReport = async (
       if (err.response?.data instanceof Blob) {
         try {
           const text = await err.response.data.text();
-          const json = JSON.parse(text);
-          if (json.message) errorMessage = json.message;
+          const json = text && text.trim() ? JSON.parse(text) : null;
+          if (json?.message) errorMessage = json.message;
         } catch (e) {
           console.warn('[Download] Blob error decode fallback:', e?.message);
         }

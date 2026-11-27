@@ -56,6 +56,7 @@ const Examinations = () => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [formError, setFormError] = useState('');
   const [successBanner, setSuccessBanner] = useState('');
+  const [refreshWarning, setRefreshWarning] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [retryingId, setRetryingId] = useState(null);
 
@@ -188,7 +189,11 @@ const Examinations = () => {
   const resolveAbortRef = useRef(null);
   const resolveSeqRef = useRef(0);
   const availAbortRef = useRef(null);
+  const fetchExamsAbortRef = useRef(null);
+  const fetchExamsSeqRef = useRef(0);
+  const skipNextTabEffectRef = useRef(false);
   const submitLockRef = useRef(false);
+  const lastCreatedExamRef = useRef({ signature: '', examId: '', createdAt: 0 });
   const deleteLockRef = useRef(false);
   const [downloadingKey, setDownloadingKey] = useState('');
 
@@ -240,6 +245,10 @@ const Examinations = () => {
   }, []);
 
   useEffect(() => {
+    if (skipNextTabEffectRef.current) {
+      skipNextTabEffectRef.current = false;
+      return;
+    }
     fetchExams();
   }, [activeTab, filterAcademicYear, filterSemester]);
 
@@ -365,27 +374,61 @@ const Examinations = () => {
     }
   }, [formData.subjectName, formData.subjectCode, formData.academicYear, formData.year, formData.semester, formData.group, showCreateModal]);
 
-  const fetchExams = async (overrideTab = null) => {
+  const fetchExams = async (overrideTab = null, { preserveOnFailure = false } = {}) => {
+    if (fetchExamsAbortRef.current) {
+      fetchExamsAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    fetchExamsAbortRef.current = controller;
+    const seq = ++fetchExamsSeqRef.current;
+
     try {
-      setLoading(true);
-      setFetchError('');
+      if (!preserveOnFailure) {
+        setLoading(true);
+        setFetchError('');
+      }
+      setRefreshWarning('');
       const tabToQuery = overrideTab || activeTab;
       const params = new URLSearchParams();
       params.append('filter', tabToQuery);
       if (filterAcademicYear !== 'ALL') params.append('academicYear', filterAcademicYear);
       if (filterSemester !== 'ALL') params.append('semester', filterSemester);
 
-      const res = await api.get(`/exams?${params.toString()}`);
-      if (res.data.success) {
-        setExams(res.data.data || []);
-      } else {
-        setFetchError(res.data.message || 'Unable to retrieve examinations from database.');
+      const res = await api.get(`/exams?${params.toString()}`, { signal: controller.signal });
+      if (seq !== fetchExamsSeqRef.current) return true;
+
+      if (res?.data?.success && Array.isArray(res.data.data)) {
+        setExams(res.data.data);
+        setFetchError('');
+        return true;
       }
+
+      const msg = res?.data?.message || 'Unable to retrieve examinations from database.';
+      if (preserveOnFailure) {
+        setRefreshWarning(`Examination was saved, but refreshing the list failed: ${msg}`);
+      } else {
+        setFetchError(msg);
+      }
+      return false;
     } catch (err) {
+      if (err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') {
+        return true;
+      }
+      if (seq !== fetchExamsSeqRef.current) return true;
       console.error('Failed to load examinations:', err);
-      setFetchError(err.response?.data?.message || err.message || 'Failed to load examinations from server.');
+      const errMsg = formatApiError(err, 'Failed to load examinations from server.');
+      if (preserveOnFailure) {
+        setRefreshWarning(
+          `Examination was saved to MongoDB, but refreshing the examination list failed (${errMsg}). Click Refresh to reload.`
+        );
+      } else {
+        setFetchError(errMsg);
+      }
+      return false;
     } finally {
-      setLoading(false);
+      if (seq === fetchExamsSeqRef.current && !preserveOnFailure) {
+        setLoading(false);
+      }
     }
   };
 
@@ -494,7 +537,7 @@ const Examinations = () => {
       setSelectedSections([]);
       setResolutionSummary(null);
       setResolutionError(
-        err.response?.data?.message || 'Failed to resolve permanent faculty-student mappings.'
+        formatApiError(err, 'Failed to resolve permanent faculty-student mappings.')
       );
     } finally {
       if (seq === resolveSeqRef.current) {
@@ -564,7 +607,7 @@ const Examinations = () => {
         setFormError(res.data?.message || 'Unable to load latest examination details from MongoDB.');
       }
     } catch (err) {
-      setFormError(err.response?.data?.message || 'Failed to fetch latest examination details from MongoDB.');
+      setFormError(formatApiError(err, 'Failed to fetch latest examination details from MongoDB.'));
     } finally {
       setLoadingEditDetails(false);
     }
@@ -695,20 +738,47 @@ const Examinations = () => {
       }
     }
 
+    let savedExam = null;
+    let savedMode = editingExam ? 'update' : 'create';
+    let targetTab = activeTab === 'pending' ? 'pending' : 'all';
+
+    const payload = {
+      ...formData,
+      startTime: timeCheck.startTime,
+      endTime: timeCheck.endTime,
+      allowOvernight: Boolean(formData.allowOvernight),
+      selectedSections: activeMappings.map((m) => m.section),
+      selectedMappingIds: activeMappings.map((m) => m.mappingId || m.id),
+      classroomOverrides,
+    };
+
+    const creationSignature = !editingExam
+      ? JSON.stringify({
+          subjectCode: String(payload.subjectCode || '').trim().toUpperCase(),
+          examDate: payload.examDate,
+          startTime: payload.startTime,
+          endTime: payload.endTime,
+          group: payload.group,
+          sections: payload.selectedSections,
+        })
+      : '';
+
+    if (
+      !editingExam &&
+      creationSignature &&
+      lastCreatedExamRef.current.signature === creationSignature &&
+      Date.now() - lastCreatedExamRef.current.createdAt < 15000
+    ) {
+      setFormError(
+        'This centralized examination was just created. Closing and refreshing instead of creating a duplicate.'
+      );
+      return;
+    }
+
     submitLockRef.current = true;
     setSubmitting(true);
 
     try {
-      const payload = {
-        ...formData,
-        startTime: timeCheck.startTime,
-        endTime: timeCheck.endTime,
-        allowOvernight: Boolean(formData.allowOvernight),
-        selectedSections: activeMappings.map((m) => m.section),
-        selectedMappingIds: activeMappings.map((m) => m.mappingId || m.id),
-        classroomOverrides,
-      };
-
       if (editingExam) {
         if (isEditingPublishedOrLocked) {
           payload.confirmControlledCorrection = true;
@@ -717,32 +787,49 @@ const Examinations = () => {
         const res = await api.put(`/exams/${editingExam._id}`, payload, {
           timeout: API_TIMEOUTS.HEAVY_WRITE,
         });
-        if (res.data?.success && res.data?.data?._id) {
+        if (res?.data?.success && res.data.data?._id) {
+          savedExam = res.data.data;
           closeExamModal();
-          setSuccessBanner(res.data.message || `Examination "${res.data.data.examName}" updated cleanly.`);
-          if (detailExam && detailExam._id === res.data.data._id) {
-            setDetailExam(res.data.data);
+          setFetchError('');
+          setRefreshWarning('');
+          setSuccessBanner(res.data.message || `Examination "${savedExam.examName}" updated cleanly.`);
+          setExams((prev) =>
+            prev.map((ex) => (String(ex._id) === String(savedExam._id) ? savedExam : ex))
+          );
+          if (detailExam && detailExam._id === savedExam._id) {
+            setDetailExam(savedExam);
           }
-          await fetchExams();
         } else {
-          setFormError(res.data?.message || 'Examination update could not be confirmed by MongoDB.');
+          setFormError(res?.data?.message || 'Examination update could not be confirmed by MongoDB.');
         }
       } else {
         const res = await api.post('/exams/create-centralized', payload, {
           timeout: API_TIMEOUTS.HEAVY_WRITE,
         });
-        if (res.data.success && res.data.data?._id) {
+        if (res?.data?.success && res.data.data?._id) {
+          savedExam = res.data.data;
+          lastCreatedExamRef.current = {
+            signature: creationSignature,
+            examId: savedExam._id,
+            createdAt: Date.now(),
+          };
           closeExamModal();
+          setFetchError('');
+          setRefreshWarning('');
           setSuccessBanner(
-            `Centralized examination "${res.data.data.examName}" (${formatExamTimeRange(res.data.data)}) saved to MongoDB for ${activeMappings.length} sections (${res.data.data.studentCount || resolutionSummary?.uniqueStudents || 0} students). Awaiting Admin Review.`
+            `Centralized examination "${savedExam.examName}" (${formatExamTimeRange(savedExam)}) saved to MongoDB for ${activeMappings.length} sections (${savedExam.studentCount || resolutionSummary?.uniqueStudents || 0} students). Awaiting Admin Review.`
           );
-          const targetTab = activeTab === 'pending' ? 'pending' : 'all';
+          setExams((prev) => [
+            savedExam,
+            ...prev.filter((ex) => String(ex._id) !== String(savedExam._id)),
+          ]);
+          targetTab = activeTab === 'pending' ? 'pending' : 'all';
           if (activeTab !== targetTab) {
+            skipNextTabEffectRef.current = true;
             setActiveTab(targetTab);
           }
-          await fetchExams(targetTab);
         } else {
-          setFormError(res.data?.message || 'Examination save could not be confirmed by MongoDB.');
+          setFormError(res?.data?.message || 'Examination save could not be confirmed by MongoDB.');
         }
       }
     } catch (err) {
@@ -750,6 +837,40 @@ const Examinations = () => {
     } finally {
       submitLockRef.current = false;
       setSubmitting(false);
+    }
+
+    // Secondary GET refreshes run independently so a refresh failure never masquerades as a save failure
+    if (savedExam) {
+      const [listResult, pendingResult, statsResult] = await Promise.allSettled([
+        fetchExams(savedMode === 'create' ? targetTab : null, { preserveOnFailure: true }),
+        api.get('/exams?filter=pending'),
+        api.get('/dashboard/stats'),
+      ]);
+
+      const secondaryWarnings = [];
+      if (listResult.status === 'fulfilled' && listResult.value === false) {
+        secondaryWarnings.push('examination list');
+      } else if (listResult.status === 'rejected') {
+        secondaryWarnings.push('examination list');
+      }
+      if (
+        pendingResult.status === 'rejected' ||
+        (pendingResult.status === 'fulfilled' && !pendingResult.value?.data?.success)
+      ) {
+        secondaryWarnings.push('pending review queue');
+      }
+      if (
+        statsResult.status === 'rejected' ||
+        (statsResult.status === 'fulfilled' && !statsResult.value?.data?.success)
+      ) {
+        secondaryWarnings.push('dashboard statistics');
+      }
+
+      if (secondaryWarnings.length > 0 && !refreshWarning) {
+        setRefreshWarning(
+          `Examination was saved to MongoDB, but refreshing secondary data (${secondaryWarnings.join(', ')}) encountered a temporary issue. Click Refresh to reload.`
+        );
+      }
     }
   };
 
@@ -793,7 +914,7 @@ const Examinations = () => {
         await fetchExams();
       }
     } catch (err) {
-      setActionError(err.response?.data?.message || 'Failed to reject examination.');
+      setActionError(formatApiError(err, 'Failed to reject examination.'));
     } finally {
       setRejecting(false);
     }
@@ -846,7 +967,7 @@ const Examinations = () => {
         await fetchExams();
       }
     } catch (err) {
-      setActionError(err.response?.data?.message || 'Failed to cancel examination.');
+      setActionError(formatApiError(err, 'Failed to cancel examination.'));
       setCancelModalExam(null);
     } finally {
       setCancelling(false);
@@ -966,6 +1087,32 @@ const Examinations = () => {
           >
             Dismiss
           </button>
+        </div>
+      )}
+
+      {/* Secondary Post-Save Refresh Warning (never implies creation failed) */}
+      {refreshWarning && (
+        <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-900 flex items-center justify-between shadow-xs">
+          <div className="flex items-center space-x-2">
+            <AlertTriangle size={17} className="text-amber-600 flex-shrink-0" />
+            <span className="font-medium">{refreshWarning}</span>
+          </div>
+          <div className="flex items-center space-x-3 ml-3 flex-shrink-0">
+            <button
+              type="button"
+              onClick={() => fetchExams(null, { preserveOnFailure: true })}
+              className="px-2.5 py-1 rounded bg-white border border-amber-300 text-amber-800 font-bold hover:bg-amber-100 cursor-pointer"
+            >
+              Retry Refresh
+            </button>
+            <button
+              type="button"
+              onClick={() => setRefreshWarning('')}
+              className="text-[11px] font-bold text-amber-800 underline cursor-pointer"
+            >
+              Dismiss
+            </button>
+          </div>
         </div>
       )}
 
@@ -1229,7 +1376,17 @@ const Examinations = () => {
                     <div className="flex flex-wrap items-center gap-2 self-start lg:self-center">
                       <button
                         type="button"
-                        onClick={() => setDetailExam(exam)}
+                        onClick={async () => {
+                          setDetailExam(exam);
+                          try {
+                            const res = await api.get(`/exams/${exam._id}`);
+                            if (res?.data?.success && res.data.data?._id) {
+                              setDetailExam(res.data.data);
+                            }
+                          } catch (detailErr) {
+                            console.warn('[Examinations] Background details refresh notice:', detailErr?.message);
+                          }
+                        }}
                         title="View Complete Examination Details"
                         className="inline-flex items-center px-2.5 py-1.5 rounded-lg border border-slate-300 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 transition-colors cursor-pointer"
                       >

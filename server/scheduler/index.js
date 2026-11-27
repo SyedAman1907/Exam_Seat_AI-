@@ -1,9 +1,14 @@
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 const Exam = require('../models/Exam');
 const Allocation = require('../models/Allocation');
 const AuditLog = require('../models/AuditLog');
+const SchedulerLock = require('../models/SchedulerLock');
+const portalCache = require('../services/portalCache');
 const { isDbConnectivityError } = require('../config/db');
 const { parseKolkataDateTime, parseExamDateRange, formatExamTimeRange } = require('../utils/dateTimeUtils');
+
+const INSTANCE_OWNER_ID = `${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
 
 /**
  * Persistent Background Publication & Lifecycle Scheduler
@@ -262,6 +267,7 @@ class PublicationScheduler {
             } catch (logErr) {}
 
             completedCount++;
+            portalCache.invalidatePortalCache(exam._id);
             console.log(
               `[Scheduler] Automatically transitioned Examination "${exam.examName} (${exam.subjectCode})" (ID: ${exam._id}) to COMPLETED.`
             );
@@ -287,6 +293,45 @@ class PublicationScheduler {
   }
 
   /**
+   * Acquires a short-lived distributed MongoDB lease lock so horizontally scaled instances
+   * do not run overlapping publication sweeps simultaneously.
+   */
+  async acquireDistributedLock(lockKey = 'exam_publication_cycle', leaseMs = 25000) {
+    try {
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + leaseMs);
+      const doc = await SchedulerLock.findOneAndUpdate(
+        {
+          lockKey,
+          $or: [{ expiresAt: { $lte: now } }, { ownerId: INSTANCE_OWNER_ID }],
+        },
+        {
+          $set: {
+            lockKey,
+            ownerId: INSTANCE_OWNER_ID,
+            lockedAt: now,
+            expiresAt,
+          },
+        },
+        { upsert: true, new: true }
+      ).lean();
+      return Boolean(doc && doc.ownerId === INSTANCE_OWNER_ID);
+    } catch (lockErr) {
+      if (lockErr?.code === 11000) {
+        return false; // Another instance acquired the lock concurrently
+      }
+      this.logSchedulerError('distributed scheduler lock', lockErr);
+      return false;
+    }
+  }
+
+  async releaseDistributedLock(lockKey = 'exam_publication_cycle') {
+    try {
+      await SchedulerLock.deleteOne({ lockKey, ownerId: INSTANCE_OWNER_ID });
+    } catch {}
+  }
+
+  /**
    * Core check loop: Completes overdue exams and releases scheduled publications
    */
   async checkScheduledPublications(overrideNow = null) {
@@ -297,7 +342,15 @@ class PublicationScheduler {
     }
 
     this.isCycleRunning = true;
+    let acquiredDistributedLock = false;
     try {
+      if (!overrideNow) {
+        acquiredDistributedLock = await this.acquireDistributedLock('exam_publication_cycle', 25000);
+        if (!acquiredDistributedLock) {
+          return 0;
+        }
+      }
+
       const now = overrideNow || new Date();
 
       // 1. First, complete any exams whose scheduled end time has arrived
@@ -349,6 +402,9 @@ class PublicationScheduler {
       this.logSchedulerError('publication check cycle', err);
       return 0;
     } finally {
+      if (acquiredDistributedLock) {
+        await this.releaseDistributedLock('exam_publication_cycle');
+      }
       this.isCycleRunning = false;
     }
   }
@@ -451,6 +507,7 @@ class PublicationScheduler {
       console.log(
         `[Scheduler] Successfully PUBLISHED Exam "${exam.examName} - ${exam.subjectName}" (ID: ${exam._id}) with ${allocation.students.length} students at ${now.toISOString()}`
       );
+      portalCache.invalidatePortalCache(exam._id);
 
       return {
         success: true,

@@ -7,7 +7,15 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(() => {
     try {
       const saved = localStorage.getItem('examseat_user');
-      return saved ? JSON.parse(saved) : null;
+      if (!saved || saved === 'null' || saved === 'undefined') {
+        return null;
+      }
+      const parsed = JSON.parse(saved);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed;
+      }
+      localStorage.removeItem('examseat_user');
+      return null;
     } catch (err) {
       console.warn('[AuthContext] Clearing corrupted stored user metadata:', err.message);
       localStorage.removeItem('examseat_user');
@@ -45,14 +53,14 @@ export const AuthProvider = ({ children }) => {
           timeout: 5000,
           signal,
         });
-        if (res.data?.success && res.data?.user) {
-          setUser(res.data.user);
-          setToken(storedToken);
-          localStorage.setItem('examseat_user', JSON.stringify(res.data.user));
-          setAuthStatus('authenticated');
-        } else {
-          clearSession();
-        }
+      if (res.data?.success && res.data?.user && typeof res.data.user === 'object') {
+        setUser(res.data.user);
+        setToken(storedToken);
+        localStorage.setItem('examseat_user', JSON.stringify(res.data.user));
+        setAuthStatus('authenticated');
+      } else {
+        clearSession();
+      }
       } catch (err) {
         if (err.name === 'CanceledError' || err.code === 'ERR_CANCELED') {
           return;
@@ -89,7 +97,7 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (email, password) => {
     const res = await api.post('/auth/login', { email, password });
-    if (res.data.success) {
+    if (res.data?.success && res.data?.token && res.data?.user && typeof res.data.user === 'object') {
       const { token: newToken, user: newUser } = res.data;
       setToken(newToken);
       setUser(newUser);
@@ -99,7 +107,7 @@ export const AuthProvider = ({ children }) => {
       localStorage.setItem('examseat_user', JSON.stringify(newUser));
       return { success: true };
     }
-    return { success: false, message: res.data.message };
+    return { success: false, message: res.data?.message || 'Sign in failed.' };
   };
 
   const logout = async () => {

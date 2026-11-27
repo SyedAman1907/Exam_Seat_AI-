@@ -121,13 +121,21 @@ function classifyDbError(err) {
 
 function getConnectionOptions() {
   const isServerless = Boolean(process.env.VERCEL);
+  const maxPoolSize = Number(process.env.MONGO_MAX_POOL_SIZE) || (isServerless ? 10 : 50);
+  const minPoolSize = Math.min(
+    maxPoolSize,
+    Number(process.env.MONGO_MIN_POOL_SIZE) || (isServerless ? 1 : 10)
+  );
+
   return {
     serverSelectionTimeoutMS: isServerless ? 8000 : 25000,
     connectTimeoutMS: isServerless ? 8000 : 20000,
     socketTimeoutMS: isServerless ? 20000 : 45000,
     heartbeatFrequencyMS: 10000,
-    maxPoolSize: isServerless ? 5 : 10,
-    minPoolSize: isServerless ? 1 : 3,
+    maxPoolSize,
+    minPoolSize,
+    waitQueueTimeoutMS: 10000,
+    maxIdleTimeMS: 60000,
     retryWrites: true,
     retryReads: true,
     family: 4, // Use IPv4 DNS resolution reliably on Windows/Node for mongodb+srv hosts
@@ -366,11 +374,17 @@ async function connectDB(opts = {}) {
 
 function getDbHealth() {
   const readyState = mongoose.connection.readyState;
+  const opts = getConnectionOptions();
   return {
     connected: readyState === 1,
     readyState,
     stateLabel: STATE_LABELS[readyState] || 'unknown',
     databaseName: mongoose.connection.name || null,
+    poolConfig: {
+      maxPoolSize: opts.maxPoolSize,
+      minPoolSize: opts.minPoolSize,
+      waitQueueTimeoutMS: opts.waitQueueTimeoutMS,
+    },
     isReconnecting,
     reconnectAttempt,
     lastConnectedAt,

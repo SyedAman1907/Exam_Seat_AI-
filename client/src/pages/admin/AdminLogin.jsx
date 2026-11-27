@@ -16,7 +16,8 @@ const AdminLogin = () => {
   const location = useLocation();
 
   const searchParams = new URLSearchParams(location.search);
-  const isExpired = searchParams.get('expired') === '1';
+  const expiredParam = searchParams.get('expired');
+  const isExpired = expiredParam === '1' || expiredParam === 'true';
   const redirectTarget = location.state?.from?.pathname
     ? `${location.state.from.pathname}${location.state.from.search || ''}`
     : '/admin/dashboard';

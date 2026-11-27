@@ -111,7 +111,7 @@ const FacultyPortal = () => {
     loadPortalData();
   }, [selectedAcademicYear, selectedSemester, selectedFaculty]);
 
-  const loadPortalData = async () => {
+  const loadPortalData = async ({ preserveFeedbackOnError = false } = {}) => {
     try {
       setLoading(true);
       setExamsError('');
@@ -130,11 +130,11 @@ const FacultyPortal = () => {
         api.get('/subjects'),
       ]);
 
-      if (subjectsRes.data && subjectsRes.data.success) {
+      if (subjectsRes?.data?.success) {
         setDbSubjects(subjectsRes.data.data || []);
       }
 
-      if (portalRes.data.success) {
+      if (portalRes?.data?.success) {
         setStats(portalRes.data.stats || { totalSubjects: 0, totalSections: 0, totalEnrollments: 0 });
         setSubjects(portalRes.data.subjects || []);
         setHierarchy(portalRes.data.hierarchy || []);
@@ -149,19 +149,21 @@ const FacultyPortal = () => {
         }
       }
 
-      if (examsRes.data.success) {
+      if (examsRes?.data?.success) {
         setFacultyExams(examsRes.data.data || []);
       } else {
-        setExamsError(examsRes.data?.message || 'Unable to load examinations.');
+        setExamsError(examsRes?.data?.message || 'Unable to load examinations.');
       }
     } catch (err) {
       console.error('Failed to load faculty portal data:', err);
-      const msg = err.response?.data?.message || err.message || 'Server connection error';
-      setExamsError(`Unable to load examinations: ${msg}`);
-      setFeedback({
-        type: 'error',
-        text: `Unable to load portal data: ${msg}. Please ensure backend server is running.`,
-      });
+      const msg = formatApiError(err, 'Server connection error');
+      setExamsError(`Unable to refresh examinations list: ${msg}`);
+      if (!preserveFeedbackOnError) {
+        setFeedback({
+          type: 'error',
+          text: `Unable to load portal data: ${msg}. Please ensure backend server is running.`,
+        });
+      }
     } finally {
       setLoading(false);
     }
@@ -405,6 +407,7 @@ const FacultyPortal = () => {
 
     if (saveLockRef.current || creatingExam) return;
     saveLockRef.current = true;
+    let savedOk = false;
     try {
       setCreatingExam(true);
       const payload = {
@@ -433,35 +436,44 @@ const FacultyPortal = () => {
         const res = await api.put(`/exams/${editingExam._id}`, payload, {
           timeout: API_TIMEOUTS.HEAVY_WRITE,
         });
-        if (res.data?.success && res.data?.data?._id) {
+        if (res?.data?.success && res.data.data?._id) {
+          savedOk = true;
+          const updatedExam = res.data.data;
           setShowCreateExamModal(false);
           setEditingExam(null);
           setExamTabFilter('ALL');
+          setFacultyExams((prev) =>
+            prev.map((ex) => (String(ex._id) === String(updatedExam._id) ? updatedExam : ex))
+          );
           setFeedback({
             type: 'success',
             text: res.data.message || `Examination "${payload.examName}" updated and saved to database.`,
           });
-          await loadPortalData();
         } else {
-          setExamFormError(res.data?.message || 'Database did not return the updated examination record.');
+          setExamFormError(res?.data?.message || 'Database did not return the updated examination record.');
         }
       } else {
         payload.saveAsDraft = saveAsDraft;
         const res = await api.post('/exams/create-centralized', payload, {
           timeout: API_TIMEOUTS.HEAVY_WRITE,
         });
-        if (res.data?.success && res.data?.data?._id) {
+        if (res?.data?.success && res.data.data?._id) {
+          savedOk = true;
+          const createdExam = res.data.data;
           setShowCreateExamModal(false);
           setExamTabFilter('ALL');
+          setFacultyExams((prev) => [
+            createdExam,
+            ...prev.filter((ex) => String(ex._id) !== String(createdExam._id)),
+          ]);
           setFeedback({
             type: 'success',
             text:
               res.data.message ||
               `Examination "${payload.examName}" created across ${activeSelectedSectionObjects.length} section(s).`,
           });
-          await loadPortalData();
         } else {
-          setExamFormError(res.data?.message || 'Database did not return the saved examination record.');
+          setExamFormError(res?.data?.message || 'Database did not return the saved examination record.');
         }
       }
     } catch (err) {
@@ -472,6 +484,10 @@ const FacultyPortal = () => {
     } finally {
       setCreatingExam(false);
       saveLockRef.current = false;
+    }
+
+    if (savedOk) {
+      await loadPortalData({ preserveFeedbackOnError: true });
     }
   };
 

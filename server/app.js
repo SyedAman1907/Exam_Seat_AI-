@@ -59,6 +59,7 @@ const envOrigins = [
   .filter(Boolean);
 
 const DEFAULT_ALLOWED_ORIGINS = [
+  'https://examseatai.vercel.app',
   'https://exam-seat-ai-eta.vercel.app',
   'http://localhost:5173',
   'http://localhost:5174',
@@ -110,6 +111,28 @@ app.options('*', corsMiddleware);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// Graceful request timeout guard (longer for PDF/Excel exports and bulk uploads)
+app.use('/api', (req, res, next) => {
+  const isHeavyRoute =
+    req.path.includes('/reports') ||
+    req.path.includes('/multi-pdf') ||
+    req.path.includes('/preview-pdf') ||
+    req.path.includes('/confirm-batch') ||
+    req.path.includes('/create-centralized') ||
+    req.path.includes('/import');
+  const timeoutMs = isHeavyRoute ? 120000 : 25000;
+  res.setTimeout(timeoutMs, () => {
+    if (!res.headersSent) {
+      res.status(504).json({
+        success: false,
+        code: 'REQUEST_TIMEOUT',
+        message: 'The server took too long to process this request. Please retry shortly.',
+      });
+    }
+  });
+  next();
+});
+
 // Development / Performance Timing Middleware
 if (process.env.NODE_ENV !== 'production' || process.env.PERF_LOGS === 'true') {
   app.use((req, res, next) => {
@@ -156,6 +179,7 @@ app.get('/api/health', (req, res) => {
       status: dbHealth.stateLabel,
       connected: dbHealth.connected,
       name: dbHealth.databaseName || 'examseat_ai',
+      poolConfig: dbHealth.poolConfig,
       reconnecting: dbHealth.isReconnecting,
       reconnectAttempt: dbHealth.reconnectAttempt,
       lastConnectedAt: dbHealth.lastConnectedAt,
