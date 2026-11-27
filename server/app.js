@@ -71,10 +71,65 @@ const DEFAULT_ALLOWED_ORIGINS = [
   'http://127.0.0.1:3000',
 ];
 
+const parseOriginTokens = (value) =>
+  String(value || '')
+    .split(',')
+    .map((entry) => entry.trim().toLowerCase())
+    .filter((entry) => /^[a-z0-9-]+$/.test(entry));
+
+const TRUSTED_VERCEL_PROJECT_SLUGS = Array.from(
+  new Set([
+    'exam-seat',
+    'exam-seat-ai',
+    'examseatai',
+    ...parseOriginTokens(process.env.CORS_VERCEL_PROJECTS),
+  ])
+);
+
+const TRUSTED_VERCEL_SCOPES = Array.from(
+  new Set([
+    'syedaman1907s-projects',
+    ...parseOriginTokens(process.env.CORS_VERCEL_SCOPES),
+  ])
+);
+
+const isTrustedVercelPreviewOrigin = (normalizedOrigin) => {
+  try {
+    const parsed = new URL(normalizedOrigin);
+    if (parsed.protocol !== 'https:' || parsed.port) {
+      return false;
+    }
+    const hostname = parsed.hostname.toLowerCase();
+    for (const scope of TRUSTED_VERCEL_SCOPES) {
+      const scopeSuffix = `-${scope}.vercel.app`;
+      if (!hostname.endsWith(scopeSuffix)) continue;
+      const slugPart = hostname.slice(0, -scopeSuffix.length);
+      if (!/^[a-z0-9-]+$/.test(slugPart)) continue;
+      if (
+        TRUSTED_VERCEL_PROJECT_SLUGS.some(
+          (projectSlug) => slugPart === projectSlug || slugPart.startsWith(`${projectSlug}-`)
+        )
+      ) {
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+};
+
 const allowedOriginSet = new Set([
   ...DEFAULT_ALLOWED_ORIGINS.map(normalizeOrigin).filter(Boolean),
   ...envOrigins,
 ]);
+
+const isOriginAllowed = (normalizedOrigin, isSameHost) => {
+  if (!normalizedOrigin) return false;
+  if (isSameHost) return true;
+  if (allowedOriginSet.has(normalizedOrigin)) return true;
+  return isTrustedVercelPreviewOrigin(normalizedOrigin);
+};
 
 const corsMiddleware = cors((req, callback) => {
   const origin = req.header('Origin');
@@ -88,7 +143,7 @@ const corsMiddleware = cors((req, callback) => {
   const host = rawHost.split(',')[0].trim().toLowerCase();
   const isSameHost = Boolean(host && (normalized === `https://${host}` || normalized === `http://${host}`));
 
-  if (normalized && (isSameHost || allowedOriginSet.has(normalized))) {
+  if (isOriginAllowed(normalized, isSameHost)) {
     return callback(null, {
       origin: normalized,
       credentials: false,
@@ -96,6 +151,7 @@ const corsMiddleware = cors((req, callback) => {
       allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Cache-Control', 'Pragma'],
       exposedHeaders: ['Content-Disposition', 'Content-Type', 'Content-Length'],
       optionsSuccessStatus: 204,
+      maxAge: 86400,
     });
   }
 

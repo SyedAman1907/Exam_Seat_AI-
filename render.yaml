@@ -10,9 +10,13 @@ services:
       - key: NODE_ENV
         value: production
       - key: CLIENT_URL
-        value: https://examseatai.vercel.app
+        value: https://exam-seat-ai-eta.vercel.app
       - key: CORS_ORIGINS
-        value: https://examseatai.vercel.app,https://exam-seat-ai-eta.vercel.app
+        value: https://exam-seat-ai-eta.vercel.app,https://examseatai.vercel.app
+      - key: CORS_VERCEL_PROJECTS
+        value: exam-seat,exam-seat-ai,examseatai
+      - key: CORS_VERCEL_SCOPES
+        value: syedaman1907s-projects
       - key: MONGO_MAX_POOL_SIZE
         value: "50"
       - key: MONGO_MIN_POOL_SIZE
