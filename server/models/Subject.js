@@ -16,7 +16,6 @@ const subjectSchema = new mongoose.Schema(
     subjectCode: {
       type: String,
       required: [true, 'Subject code is required'],
-      unique: true,
       trim: true,
       uppercase: true,
     },
@@ -37,6 +36,15 @@ const subjectSchema = new mongoose.Schema(
       type: String,
       default: '2026-2027',
     },
+    group: {
+      type: String,
+      enum: ['Group A', 'Group B', 'ALL'],
+      default: 'ALL',
+    },
+    sections: {
+      type: [String],
+      default: [],
+    },
     isActive: {
       type: Boolean,
       default: true,
@@ -45,6 +53,7 @@ const subjectSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+subjectSchema.index({ subjectCode: 1, academicYear: 1, semester: 1 }, { unique: true, name: 'subject_code_acad_sem_idx' });
 subjectSchema.index({ subjectCode: 1, department: 1 });
 subjectSchema.index({ abbreviation: 1 });
 

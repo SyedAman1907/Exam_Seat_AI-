@@ -18,7 +18,7 @@ const {
   deleteStudent,
   clearAllStudents,
 } = require('../controllers/studentController');
-const { protect } = require('../middleware/auth');
+const { protect, authorize } = require('../middleware/auth');
 
 // Multer storage configuration (use writable /tmp on read-only Vercel serverless filesystem)
 const uploadsDir = process.env.VERCEL
@@ -50,27 +50,27 @@ const upload = multer({
   },
 });
 
-router.use(protect);
+router.use(protect, authorize('admin', 'faculty'));
 
-// Multi-file student PDF/Excel/CSV endpoints
-router.post('/multi-pdf-preview', upload.array('files', 20), multiPdfPreview);
-router.post('/multi-pdf-confirm', multiPdfConfirm);
+// Multi-file student PDF/Excel/CSV endpoints (Admin mutations)
+router.post('/multi-pdf-preview', authorize('admin'), upload.array('files', 20), multiPdfPreview);
+router.post('/multi-pdf-confirm', authorize('admin'), multiPdfConfirm);
 router.get('/database', getStudentDatabase);
 router.get('/filters', getStudentFilterOptions);
-router.delete('/clear-all', clearAllStudents);
+router.delete('/clear-all', authorize('admin'), clearAllStudents);
 
 // Direct Student CRUD endpoints
 router.route('/')
   .get(getStudents)
-  .post(createStudent);
+  .post(authorize('admin'), createStudent);
 
 // Legacy single-file and exam-specific endpoints
-router.post('/import-preview', upload.single('file'), importPreview);
-router.post('/confirm', confirmStudents);
+router.post('/import-preview', authorize('admin'), upload.single('file'), importPreview);
+router.post('/confirm', authorize('admin'), confirmStudents);
 router.get('/exam/:id', getStudentsByExam);
 router.route('/:id')
   .get(getStudentById)
-  .put(updateStudent)
-  .delete(deleteStudent);
+  .put(authorize('admin'), updateStudent)
+  .delete(authorize('admin'), deleteStudent);
 
 module.exports = router;

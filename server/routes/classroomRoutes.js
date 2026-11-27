@@ -8,20 +8,20 @@ const {
   getSectionMappings,
   updateSectionMappings,
 } = require('../controllers/classroomController');
-const { protect } = require('../middleware/auth');
+const { protect, authorize } = require('../middleware/auth');
 
-router.use(protect);
+router.use(protect, authorize('admin', 'faculty'));
 
 router.route('/section-mappings')
   .get(getSectionMappings)
-  .put(updateSectionMappings);
+  .put(authorize('admin'), updateSectionMappings);
 
 router.route('/')
   .get(getClassrooms)
-  .post(createClassroom);
+  .post(authorize('admin'), createClassroom);
 
 router.route('/:id')
   .get(getClassroomById)
-  .put(updateClassroom);
+  .put(authorize('admin'), updateClassroom);
 
 module.exports = router;

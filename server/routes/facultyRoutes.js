@@ -12,12 +12,12 @@ const { protect, authorize } = require('../middleware/auth');
 router.use(protect);
 
 router.route('/')
-  .get(getFaculties)
-  .post(authorize('admin', 'exam_incharge'), createFaculty);
+  .get(authorize('admin', 'faculty'), getFaculties)
+  .post(authorize('admin'), createFaculty);
 
 router.route('/:id')
-  .get(getFacultyById)
-  .put(authorize('admin', 'exam_incharge'), updateFaculty)
+  .get(authorize('admin', 'faculty'), getFacultyById)
+  .put(authorize('admin'), updateFaculty)
   .delete(authorize('admin'), deleteFaculty);
 
 module.exports = router;

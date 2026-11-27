@@ -40,37 +40,17 @@ const seedDatabase = async () => {
       console.log(`[Seed] Super Admin already exists: ${admin.email}`);
     }
 
-    // 1b. Seed Exam Incharge Account
-    const inchargeEmail = (process.env.INCHARGE_EMAIL || 'incharge@rgmcet.edu.in').toLowerCase().trim();
-    let incharge = await User.findOne({ email: inchargeEmail });
-    if (!incharge) {
-      const inchargePassword = process.env.INCHARGE_PASSWORD || 'InchargeExam@2026';
-      const passwordHash = await User.hashPassword(inchargePassword);
-      incharge = await User.create({
-        name: 'Dr. Exam Incharge Coordinator',
-        username: 'incharge',
-        email: inchargeEmail,
-        passwordHash,
-        role: 'exam_incharge',
-        department: 'Computer Science and Engineering',
-        designation: 'Department Exam Incharge & Center Coordinator',
-        isActive: true,
-      });
-      console.log(`[Seed] Exam Incharge created: ${incharge.email}`);
-    } else {
-      if (incharge.role !== 'exam_incharge') {
-        incharge.role = 'exam_incharge';
-        await incharge.save();
-      }
-      console.log(`[Seed] Exam Incharge already exists: ${incharge.email}`);
-    }
+    // Retire any deprecated Exam Incharge accounts without touching Admin or Faculty
+    await User.updateMany(
+      { role: { $in: ['exam_incharge', 'incharge'] } },
+      { $set: { role: 'faculty', isActive: false } }
+    );
 
     // 2. Remove legacy mock classroom (A-101) if present
     await Classroom.deleteMany({ roomNumber: { $regex: /^A-101/i } });
 
     // 3. Ensure the active 6 ET BLOCK classrooms (3010, 3020, 3030, 3040, 3050, 3060) configured to EXACTLY 72 seats
     const { generateDefault72SeatLayout } = require('../controllers/classroomController');
-    const { seedDefaultSubjects } = require('../controllers/subjectController');
 
     const targetRooms = ['3010', '3020', '3030', '3040', '3050', '3060'];
     await Classroom.updateMany(
@@ -121,129 +101,8 @@ const seedDatabase = async () => {
     }
     console.log('[Seed] Configured 6 active ET BLOCK classrooms with exactly 72 seats (3010, 3020, 3030, 3040, 3050, 3060).');
 
-    // 3b. Seed Permanent Subject Master Collection (OOAD, ATCD, AI, IQTA, CN)
-    try {
-      await seedDefaultSubjects();
-      console.log('[Seed] Permanent department subjects (OOAD, ATCD, AI, IQTA, CN) verified.');
-    } catch (subjErr) {
-      console.warn('[Seed Warning] Subject seeding warning:', subjErr.message);
-    }
-
-    // 4. Seed Official Department Examination Timetable (if empty)
-    const timetableCount = await Timetable.countDocuments();
-    if (timetableCount === 0) {
-      const defaultTimetable = [
-        {
-          date: '2026-11-07',
-          displayDate: '07/11/2026',
-          subjectName: 'CNIP',
-          subjectCode: 'CS401',
-          academicYear: '2026-2027',
-          department: 'Computer Science and Engineering',
-          year: 'IV Year',
-          semester: 'I Semester',
-          section: 'A',
-          session: 'FN',
-          status: 'scheduled',
-        },
-        {
-          date: '2026-11-07',
-          displayDate: '07/11/2026',
-          subjectName: 'Cloud Computing',
-          subjectCode: 'CS405',
-          academicYear: '2026-2027',
-          department: 'Computer Science and Engineering',
-          year: 'IV Year',
-          semester: 'I Semester',
-          section: 'B',
-          session: 'FN',
-          status: 'scheduled',
-        },
-        {
-          date: '2026-11-09',
-          displayDate: '09/11/2026',
-          subjectName: 'DBMS',
-          subjectCode: 'CS402',
-          academicYear: '2026-2027',
-          department: 'Computer Science and Engineering',
-          year: 'IV Year',
-          semester: 'I Semester',
-          section: 'A',
-          session: 'FN',
-          status: 'scheduled',
-        },
-        {
-          date: '2026-11-11',
-          displayDate: '11/11/2026',
-          subjectName: 'Operating Systems',
-          subjectCode: 'CS403',
-          academicYear: '2026-2027',
-          department: 'Computer Science and Engineering',
-          year: 'IV Year',
-          semester: 'I Semester',
-          section: 'A',
-          session: 'FN',
-          status: 'scheduled',
-        },
-        {
-          date: '2026-11-13',
-          displayDate: '13/11/2026',
-          subjectName: 'Computer Networks',
-          subjectCode: 'CS404',
-          academicYear: '2026-2027',
-          department: 'Computer Science and Engineering',
-          year: 'IV Year',
-          semester: 'I Semester',
-          section: 'A',
-          session: 'FN',
-          status: 'scheduled',
-        },
-        {
-          date: '2026-12-01',
-          displayDate: '01/12/2026',
-          subjectName: 'Artificial Intelligence & Machine Learning',
-          subjectCode: 'CS406',
-          academicYear: '2026-2027',
-          department: 'Computer Science and Engineering',
-          year: 'IV Year',
-          semester: 'I Semester',
-          section: 'A',
-          session: 'FN',
-          status: 'scheduled',
-        },
-        {
-          date: '2026-12-04',
-          displayDate: '04/12/2026',
-          subjectName: 'Cyber Security & Digital Forensics',
-          subjectCode: 'CS407',
-          academicYear: '2026-2027',
-          department: 'Computer Science and Engineering',
-          year: 'IV Year',
-          semester: 'I Semester',
-          section: 'A',
-          session: 'FN',
-          status: 'scheduled',
-        },
-      ];
-
-      for (const tt of defaultTimetable) {
-        await Timetable.findOneAndUpdate(
-          {
-            date: tt.date,
-            session: tt.session,
-            section: tt.section,
-            department: tt.department,
-            year: tt.year,
-            semester: tt.semester,
-          },
-          tt,
-          { upsert: true, new: true, setDefaultsOnInsert: true }
-        );
-      }
-      console.log(`[Seed] Seeded ${defaultTimetable.length} official timetable subjects into MongoDB.`);
-    }
-
-    // 5. Ensure permanent FacultyMapping records carry correct Group classifications
+    // Never auto-insert dummy subjects, faculty, students, or timetable records on boot.
+    // 4. Ensure permanent FacultyMapping records carry correct Group classifications when present
     const FacultyMapping = require('../models/FacultyMapping');
     await FacultyMapping.updateMany({ section: { $in: ['A1', 'A2', 'A3'] } }, { $set: { group: 'Group A' } });
     await FacultyMapping.updateMany({ section: { $in: ['A4', 'A5', 'A6'] } }, { $set: { group: 'Group B' } });

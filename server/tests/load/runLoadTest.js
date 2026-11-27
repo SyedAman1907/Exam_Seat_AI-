@@ -250,6 +250,7 @@ async function seedIsolatedLoadTestData() {
 
   const exam = await Exam.create({
     examName: 'Isolated 500-Student Load Test Exam',
+    examType: 'UNIT 1',
     academicYear: '2026-2027',
     department: 'Computer Science and Engineering',
     year: 'III Year',
@@ -263,6 +264,7 @@ async function seedIsolatedLoadTestData() {
     startDateTime: startDt,
     endDateTime: endDt,
     publicationTime: pubDt,
+    publicationTimeStr: formatTime12h(pubDt),
     publicationStatus: 'PUBLISHED',
     publishedAt: pubDt,
     session: startDt.getHours() >= 12 ? 'PM' : 'AM',

@@ -18,9 +18,16 @@ const AdminLogin = () => {
   const searchParams = new URLSearchParams(location.search);
   const expiredParam = searchParams.get('expired');
   const isExpired = expiredParam === '1' || expiredParam === 'true';
-  const redirectTarget = location.state?.from?.pathname
+  const defaultRedirectForRole = (role) => {
+    const norm = String(role || '').toLowerCase();
+    if (norm === 'faculty') return '/faculty/portal';
+    if (norm === 'student') return '/student/seat-finder';
+    return '/admin/dashboard';
+  };
+
+  const requestedFrom = location.state?.from?.pathname
     ? `${location.state.from.pathname}${location.state.from.search || ''}`
-    : '/admin/dashboard';
+    : '';
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -31,7 +38,15 @@ const AdminLogin = () => {
     try {
       const result = await login(email.trim(), password);
       if (result.success) {
-        navigate(redirectTarget, { replace: true });
+        const role = String(result.user?.role || '').toLowerCase();
+        const fallbackTarget = defaultRedirectForRole(role);
+        let finalTarget = fallbackTarget;
+        if (requestedFrom) {
+          if (role === 'admin') finalTarget = requestedFrom;
+          else if (role === 'faculty' && requestedFrom.startsWith('/faculty')) finalTarget = requestedFrom;
+          else if (role === 'stud ent' && requestedFrom.startsWith('/student')) finalTarget = requestedFrom;
+        }
+        navigate(finalTarget, { replace: true });
       } else {
         setError(result.message || 'Invalid email/username or password.');
       }
@@ -74,16 +89,16 @@ const AdminLogin = () => {
             Department of Computer Science and Engineering
           </p>
           <p className="text-xs text-slate-600 mt-1">
-            ExamSeat AI — Faculty &amp; Examination Cell Control Portal
+            ExamSeat AI — Admin &amp; Faculty Examination Portal
           </p>
         </header>
 
         {/* Sign In Surface */}
         <main className="bg-white py-7 px-5 sm:px-8 border border-slate-200 rounded-xl shadow-xs">
           <div className="border-b border-slate-200 pb-4 mb-5">
-            <h2 className="text-base font-bold text-navy-800">Staff &amp; Admin Sign In</h2>
+            <h2 className="text-base font-bold text-navy-800">Admin &amp; Faculty Sign In</h2>
             <p className="text-xs text-slate-600 mt-0.5">
-              Sign in with your authorized institutional account to manage schedules, rosters, and seating.
+              Sign in with your authorized Admin or Faculty credentials. Students sign in via Registration Number on the Student Portal.
             </p>
           </div>
 

@@ -57,7 +57,11 @@ const DEFAULT_SUBJECTS = [
 async function seedDefaultSubjects() {
   for (const s of DEFAULT_SUBJECTS) {
     await Subject.findOneAndUpdate(
-      { subjectCode: s.subjectCode },
+      {
+        subjectCode: s.subjectCode,
+        academicYear: s.academicYear,
+        semester: s.semester,
+      },
       {
         $set: {
           subjectName: s.subjectName,
@@ -90,13 +94,17 @@ exports.getSubjects = async (req, res) => {
     if (year && year !== 'ALL') mapMatch.year = year;
     if (semester && semester !== 'ALL') mapMatch.semester = semester;
 
-    let [subjects, mappedSubjects] = await Promise.all([
-      Subject.find(filter).sort({ abbreviation: 1, subjectName: 1 }).lean(),
+    const [subjects, mappedSubjects] = await Promise.all([
+      Subject.find(filter).sort({ academicYear: -1, semester: 1, subjectName: 1 }).lean(),
       FacultyMapping.aggregate([
         { $match: mapMatch },
         {
           $group: {
-            _id: { $toUpper: { $ifNull: ['$subjectCode', '$subjectName'] } },
+            _id: {
+              code: { $toUpper: { $ifNull: ['$subjectCode', '$subjectName'] } },
+              academicYear: { $ifNull: ['$academicYear', '2026-2027'] },
+              semester: { $ifNull: ['$semester', 'I Semester'] },
+            },
             subjectName: { $first: '$subjectName' },
             subjectCode: { $first: '$subjectCode' },
             department: { $first: '$department' },
@@ -109,39 +117,37 @@ exports.getSubjects = async (req, res) => {
       ]),
     ]);
 
-    // If database has 0 subjects, perform immediate idempotent seed
-    if (subjects.length === 0 && Object.keys(filter).length <= 1) {
-      await seedDefaultSubjects();
-      subjects = await Subject.find(filter).sort({ abbreviation: 1, subjectName: 1 }).lean();
-    }
+    const makeCompoundKey = (codeOrName, acadYr, sem) =>
+      `${String(codeOrName || '').trim().toUpperCase()}__${String(acadYr || '2026-2027').trim()}__${String(sem || 'I Semester').trim()}`;
 
-    const byCode = new Map();
+    const byKey = new Map();
     subjects.forEach((s) => {
-      const key = String(s.subjectCode || s.subjectName || '').trim().toUpperCase();
-      if (key) byCode.set(key, s);
+      const key = makeCompoundKey(s.subjectCode || s.subjectName, s.academicYear, s.semester);
+      if (key) byKey.set(key, s);
     });
 
     mappedSubjects.forEach((ms) => {
       const code = String(ms.subjectCode || '').trim().toUpperCase();
-      const key = code || String(ms.subjectName || '').trim().toUpperCase();
-      if (key && !byCode.has(key)) {
+      const key = makeCompoundKey(code || ms.subjectName, ms.academicYear, ms.semester);
+      if (key && !byKey.has(key)) {
         const cleanName = String(ms.subjectName || code).trim();
-        byCode.set(key, {
+        byKey.set(key, {
           _id: `mapped-${key}`,
           subjectName: cleanName,
-          subjectCode: code || key,
+          subjectCode: code || String(ms.subjectName || '').trim().toUpperCase(),
           abbreviation: cleanName.slice(0, 6).toUpperCase(),
           department: ms.department || 'Computer Science and Engineering',
           year: ms.year || 'III Year',
           semester: ms.semester || 'I Semester',
           academicYear: ms.academicYear || '2026-2027',
+          sections: ms.sectionsCount || [],
           isActive: true,
           fromMapping: true,
         });
       }
     });
 
-    const merged = Array.from(byCode.values()).sort((a, b) =>
+    const merged = Array.from(byKey.values()).sort((a, b) =>
       String(a.subjectName || '').localeCompare(String(b.subjectName || ''))
     );
 
@@ -175,7 +181,7 @@ exports.getSubjectById = async (req, res) => {
 // @access  Private (Admin only)
 exports.createSubject = async (req, res) => {
   try {
-    const { subjectName, subjectCode, abbreviation, department, year, semester, academicYear } = req.body;
+    const { subjectName, subjectCode, abbreviation, department, year, semester, academicYear, group, sections } = req.body;
 
     if (!subjectName || !subjectCode) {
       return res.status(400).json({
@@ -185,13 +191,32 @@ exports.createSubject = async (req, res) => {
     }
 
     const code = subjectCode.trim().toUpperCase();
-    const existing = await Subject.findOne({ subjectCode: code });
+    const cleanAcadYear = (academicYear || '2026-2027').trim();
+    const cleanSemester = (semester || 'I Semester').trim();
+    const existing = await Subject.findOne({
+      subjectCode: code,
+      academicYear: cleanAcadYear,
+      semester: cleanSemester,
+    });
     if (existing) {
       return res.status(409).json({
         success: false,
-        message: `A subject with code "${code}" already exists (${existing.subjectName}).`,
+        message: `Subject "${code}" already exists for ${cleanAcadYear} (${cleanSemester}).`,
       });
     }
+
+    const cleanSections = Array.isArray(sections)
+      ? sections.map((s) => String(s).trim().toUpperCase()).filter(Boolean)
+      : typeof sections === 'string'
+      ? sections.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean)
+      : [];
+
+    const normalizeSubjectGroup = (rawGroup) => {
+      const upper = String(rawGroup || '').trim().toUpperCase();
+      if (upper === 'GROUP A' || upper === 'A') return 'Group A';
+      if (upper === 'GROUP B' || upper === 'B') return 'Group B';
+      return 'ALL';
+    };
 
     const subject = new Subject({
       subjectName: subjectName.trim(),
@@ -199,8 +224,10 @@ exports.createSubject = async (req, res) => {
       abbreviation: (abbreviation || '').trim().toUpperCase(),
       department: department || 'Computer Science and Engineering',
       year: year || 'III Year',
-      semester: semester || 'I Semester',
-      academicYear: academicYear || '2026-2027',
+      semester: cleanSemester,
+      academicYear: cleanAcadYear,
+      group: normalizeSubjectGroup(group),
+      sections: cleanSections,
       isActive: true,
     });
 
@@ -230,26 +257,54 @@ exports.updateSubject = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Subject not found.' });
     }
 
-    const { subjectName, subjectCode, abbreviation, department, year, semester, academicYear, isActive } = req.body;
+    const { subjectName, subjectCode, abbreviation, department, year, semester, academicYear, group, sections, isActive } = req.body;
 
-    if (subjectCode && subjectCode.trim().toUpperCase() !== subject.subjectCode) {
-      const newCode = subjectCode.trim().toUpperCase();
-      const existing = await Subject.findOne({ subjectCode: newCode, _id: { $ne: subject._id } });
+    const nextCode = subjectCode ? subjectCode.trim().toUpperCase() : subject.subjectCode;
+    const nextAcadYear = academicYear ? academicYear.trim() : subject.academicYear;
+    const nextSemester = semester ? semester.trim() : subject.semester;
+
+    if (
+      nextCode !== subject.subjectCode ||
+      nextAcadYear !== subject.academicYear ||
+      nextSemester !== subject.semester
+    ) {
+      const existing = await Subject.findOne({
+        subjectCode: nextCode,
+        academicYear: nextAcadYear,
+        semester: nextSemester,
+        _id: { $ne: subject._id },
+      });
       if (existing) {
         return res.status(409).json({
           success: false,
-          message: `Subject code "${newCode}" is already in use by "${existing.subjectName}".`,
+          message: `Subject code "${nextCode}" already exists for ${nextAcadYear} (${nextSemester}).`,
         });
       }
-      subject.subjectCode = newCode;
+      subject.subjectCode = nextCode;
     }
 
     if (subjectName) subject.subjectName = subjectName.trim();
     if (abbreviation !== undefined) subject.abbreviation = abbreviation.trim().toUpperCase();
     if (department) subject.department = department.trim();
     if (year) subject.year = year.trim();
-    if (semester) subject.semester = semester.trim();
-    if (academicYear) subject.academicYear = academicYear.trim();
+    if (semester) subject.semester = nextSemester;
+    if (academicYear) subject.academicYear = nextAcadYear;
+    if (group !== undefined) {
+      const upperG = String(group || '').trim().toUpperCase();
+      subject.group =
+        upperG === 'GROUP A' || upperG === 'A'
+          ? 'Group A'
+          : upperG === 'GROUP B' || upperG === 'B'
+          ? 'Group B'
+          : 'ALL';
+    }
+    if (sections !== undefined) {
+      subject.sections = Array.isArray(sections)
+        ? sections.map((s) => String(s).trim().toUpperCase()).filter(Boolean)
+        : typeof sections === 'string'
+        ? sections.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean)
+        : [];
+    }
     if (typeof isActive === 'boolean') subject.isActive = isActive;
 
     await subject.save();

@@ -300,7 +300,7 @@ exports.getSectionAttendancePDF = async (req, res) => {
 // @desc    Download All Section Attendance Sheets as a ZIP Archive (Supports ?sections=A1,A2 filtering)
 // @route   GET /api/reports/:id/attendance-zip
 // @route   GET /api/exams/:id/reports/attendance-zip
-// @access  Private (Admin / Exam Incharge)
+// @access  Private (Admin / Faculty)
 exports.getCentralizedAttendanceZip = async (req, res) => {
   try {
     const { id } = req.params;

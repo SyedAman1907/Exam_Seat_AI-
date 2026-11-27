@@ -370,12 +370,14 @@ async function run() {
       assert.ok(overlapConflict, 'Overlapping 11:30 AM - 01:30 PM in same room must be detected');
       assert.strictEqual(String(overlapConflict._id), String(morningExam._id));
 
-      // 5. Verify X-Request-Id header, Exam Type enum, historical backfill, and edit preservation
-      const { normalizeExamType, resolveExamType, inferExamTypeFromTitle } = require('../utils/examTypeUtils');
+      // 5. Verify X-Request-Id header, strict UNIT 1..UNIT 5 Exam Type enum, historical backfill, and edit preservation
+      const { normalizeExamType, resolveExamType, inferExamTypeFromTitle, isValidUnitExamType } = require('../utils/examTypeUtils');
       const ensureExamIndexes = require('../utils/ensureExamIndexes');
       assert.strictEqual(normalizeExamType('unit 3'), 'UNIT 3');
-      assert.strictEqual(normalizeExamType('mid term 2'), 'MID-TERM 2');
-      assert.strictEqual(inferExamTypeFromTitle('III Year I Sem UNIT 1 Examination'), 'UNIT 1');
+      assert.strictEqual(isValidUnitExamType('UNIT 1'), true);
+      assert.strictEqual(isValidUnitExamType('UNIT 5'), true);
+      assert.strictEqual(isValidUnitExamType('Mid Term'), false);
+      assert.strictEqual(inferExamTypeFromTitle('III Year I Sem UNIT 2 Examination'), 'UNIT 2');
 
       const unitExam = await Exam.create({
         examName: 'III Year I Semester UNIT 1 Examination',
@@ -385,6 +387,8 @@ async function run() {
         examDate: '2026-12-15',
         startTime: '02:00 PM',
         endTime: '03:00 PM',
+        publicationTime: parseExamDateRange('2026-12-15', '01:50 PM', '03:00 PM', null, { session: 'PM' }).startDateTime,
+        publicationTimeStr: '01:50 PM',
         session: 'PM',
         group: 'Group A',
         section: 'A1',
@@ -394,9 +398,9 @@ async function run() {
       });
       assert.strictEqual(resolveExamType(unitExam), 'UNIT 1');
 
-      // Legacy exam without examType field should safely backfill without duplication
+      // Legacy exam without examType field should safely normalize to UNIT 1..UNIT 5 without duplication
       const legacyInsert = await Exam.collection.insertOne({
-        examName: 'III Year I Semester MID-TERM 2 Examination',
+        examName: 'III Year I Semester UNIT 2 Examination',
         subjectName: 'Legacy Subject',
         subjectCode: '20A05LEG',
         examDate: '2026-12-16',
@@ -406,7 +410,7 @@ async function run() {
       });
       await ensureExamIndexes();
       const backfilled = await Exam.findById(legacyInsert.insertedId).lean();
-      assert.strictEqual(backfilled.examType, 'MID-TERM 2');
+      assert.strictEqual(backfilled.examType, 'UNIT 2');
 
       // Verify API filter by ?examType=UNIT 1 and X-Request-Id header
       const filteredRes = await sendJson(port, {
@@ -418,7 +422,7 @@ async function run() {
       assert.ok(filteredRes.json.data.some((ex) => String(ex._id) === String(unitExam._id)));
       assert.strictEqual(typeof filteredRes.json.counts?.pendingReview, 'number');
 
-      // Verify PUT /api/exams/:id preserves examType when omitted, and updates when explicitly changed
+      // Verify PUT /api/exams/:id preserves examType when omitted, rejects non-UNIT types, and accepts UNIT 5
       const editKeepType = await sendJson(port, {
         method: 'PUT',
         reqPath: `/api/exams/${unitExam._id}`,
@@ -428,14 +432,23 @@ async function run() {
       assert.strictEqual(editKeepType.status, 200);
       assert.strictEqual(editKeepType.json.data.examType, 'UNIT 1');
 
-      const editChangeType = await sendJson(port, {
+      const editBadType = await sendJson(port, {
         method: 'PUT',
         reqPath: `/api/exams/${unitExam._id}`,
         headers: { Authorization: `Bearer ${token}` },
         body: { examType: 'SEMESTER END EXAMINATION' },
       });
+      assert.strictEqual(editBadType.status, 400);
+      assert.strictEqual(editBadType.json.code, 'INVALID_EXAM_TYPE');
+
+      const editChangeType = await sendJson(port, {
+        method: 'PUT',
+        reqPath: `/api/exams/${unitExam._id}`,
+        headers: { Authorization: `Bearer ${token}` },
+        body: { examType: 'UNIT 5' },
+      });
       assert.strictEqual(editChangeType.status, 200);
-      assert.strictEqual(editChangeType.json.data.examType, 'SEMESTER END EXAMINATION');
+      assert.strictEqual(editChangeType.json.data.examType, 'UNIT 5');
 
       console.log('[Jobs, Time, ExamType & SchedulerLock Verification] PASSED: Continuation PDF parsing, background mapping jobs + partial retry, 12h time conversion, room-conflict timestamps, examType CRUD/backfill/filtering, and distributed lock succeeded.');
     } finally {

@@ -18,32 +18,45 @@ import {
   Layers,
   Clock,
   UserCheck,
+  BookOpen,
+  UserCog,
 } from 'lucide-react';
 
-const NAV_GROUPS = [
+const ADMIN_NAV_GROUPS = [
   {
     label: 'Examination Control',
     items: [
       { name: 'Dashboard', path: '/admin/dashboard', icon: LayoutDashboard },
-      { name: 'Examinations', path: '/admin/exams', icon: Calendar },
-      { name: 'Faculty Exam Portal', path: '/faculty/portal', icon: Layers },
+      { name: 'Examination Requests & Scheduling', path: '/admin/exams', icon: Calendar },
+      { name: 'Faculty Exam Scheduling', path: '/faculty/portal', icon: Layers },
       { name: 'Seating Allocations', path: '/admin/allocations', icon: Shuffle },
     ],
   },
   {
-    label: 'Rosters & Documents',
+    label: 'Academic Master & Mappings',
     items: [
-      { name: 'Faculty & Student Mapping', path: '/admin/assignments', icon: UserCheck },
-      { name: 'Student Directory', path: '/admin/students', icon: Users },
-      { name: 'Examination Timetable', path: '/admin/timetable', icon: Clock },
-      { name: 'Official Reports (PDF/Excel)', path: '/admin/reports', icon: FileSpreadsheet },
+      { name: 'Faculty Management', path: '/admin/faculty', icon: UserCog },
+      { name: 'Subject Management', path: '/admin/subjects', icon: BookOpen },
+      { name: 'Permanent Student Mapping', path: '/admin/assignments', icon: UserCheck },
+      { name: 'Student Management', path: '/admin/students', icon: Users },
     ],
   },
   {
-    label: 'Infrastructure',
+    label: 'Infrastructure & Reports',
     items: [
-      { name: 'Classrooms (ET BLOCK)', path: '/admin/classrooms', icon: Grid3X3 },
+      { name: 'Classroom Management', path: '/admin/classrooms', icon: Grid3X3 },
+      { name: 'Examination Timetable', path: '/admin/timetable', icon: Clock },
+      { name: 'Attendance & Exam Reports', path: '/admin/reports', icon: FileSpreadsheet },
       { name: 'System Settings', path: '/admin/settings', icon: Settings },
+    ],
+  },
+];
+
+const FACULTY_NAV_GROUPS = [
+  {
+    label: 'Faculty Examination Workspace',
+    items: [
+      { name: 'My Subjects & Exam Scheduling', path: '/faculty/portal', icon: Layers },
     ],
   },
 ];
@@ -68,9 +81,13 @@ const AdminLayout = () => {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [mobileMenuOpen]);
 
+  const isAdmin = user?.role === 'admin';
+  const navGroups = isAdmin ? ADMIN_NAV_GROUPS : FACULTY_NAV_GROUPS;
+  const homePath = isAdmin ? '/admin/dashboard' : '/faculty/portal';
+
   const renderNavGroups = (onItemClick) => (
     <nav aria-label="Portal Navigation" className="space-y-5">
-      {NAV_GROUPS.map((group) => (
+      {navGroups.map((group) => (
         <div key={group.label} className="space-y-1">
           <div className="px-3 text-[11px] font-bold uppercase tracking-wider text-slate-500">
             {group.label}
@@ -123,7 +140,7 @@ const AdminLayout = () => {
               {mobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
             </button>
 
-            <Link to="/admin/dashboard" className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+            <Link to={homePath} className="flex items-center gap-2.5 sm:gap-3 min-w-0">
               <img
                 src="/rgmcet-logo.jpg"
                 alt="RGMCET Official Crest"
@@ -155,9 +172,9 @@ const AdminLayout = () => {
 
             <div className="flex items-center gap-2.5 pl-2 sm:pl-3 border-l border-slate-200">
               <div className="text-right hidden sm:block">
-                <div className="text-xs font-bold text-navy-800">{user?.name || 'Exam Controller Admin'}</div>
+                <div className="text-xs font-bold text-navy-800">{user?.name || (isAdmin ? 'Administrator' : 'Faculty Member')}</div>
                 <div className="text-[11px] font-medium text-slate-600 uppercase tracking-wide">
-                  {user?.role === 'admin' ? 'Super Admin' : user?.role === 'exam_incharge' ? 'Exam Incharge' : 'Faculty'}
+                  {isAdmin ? 'Admin' : 'Faculty'}
                 </div>
               </div>
               <div

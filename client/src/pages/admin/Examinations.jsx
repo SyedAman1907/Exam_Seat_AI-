@@ -37,6 +37,8 @@ import {
   formatTime12h,
   formatExamTimeRange,
   validateExamTimeRange,
+  validateCustomPublicationTime,
+  subtractMinutes12h,
   normalizeSessionCode,
   formatSessionLabel,
   toMinutesFromMidnight,
@@ -51,7 +53,7 @@ import TimeSelect12h from '../../components/TimeSelect12h';
 const Examinations = () => {
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
-  const isExamIncharge = user?.role === 'exam_incharge' || user?.role === 'incharge' || isAdmin;
+  const canCreateOrEditExam = isAdmin || user?.role === 'faculty';
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
 
@@ -227,6 +229,8 @@ const Examinations = () => {
     examDate: getTodayKolkataIso(),
     startTime: '09:00 AM',
     endTime: '12:00 PM',
+    publicationTime: '08:50 AM',
+    confirmPastPublication: false,
     session: 'AM',
     group: 'Group A',
     allowOvernight: false,
@@ -673,6 +677,11 @@ const Examinations = () => {
       examDate: exam.examDate || getTodayKolkataIso(),
       startTime: formatTime12h(exam.startTime, '09:00 AM'),
       endTime: formatTime12h(exam.endTime, '12:00 PM'),
+      publicationTime: formatTime12h(
+        exam.publicationTimeStr || exam.publicationTime,
+        subtractMinutes12h(formatTime12h(exam.startTime, '09:00 AM'), 10)
+      ),
+      confirmPastPublication: false,
       session: normalizeSessionCode(exam.session, 'AM'),
       group: exam.group || 'Group A',
       allowOvernight: Boolean(exam.allowOvernight),
@@ -744,6 +753,8 @@ const Examinations = () => {
       examDate: prefillDate || getTodayKolkataIso(),
       startTime: isAfternoon ? '02:00 PM' : '09:00 AM',
       endTime: isAfternoon ? '05:00 PM' : '12:00 PM',
+      publicationTime: isAfternoon ? '01:50 PM' : '08:50 AM',
+      confirmPastPublication: false,
       session: sess,
       group: 'Group A',
       allowOvernight: false,
@@ -782,6 +793,7 @@ const Examinations = () => {
           ? {
             startTime: isPM ? '02:00 PM' : '09:00 AM',
             endTime: isPM ? '05:00 PM' : '12:00 PM',
+            publicationTime: isPM ? '01:50 PM' : '08:50 AM',
           }
           : {}),
       };
@@ -810,6 +822,22 @@ const Examinations = () => {
     });
     if (!timeCheck.valid) {
       setFormError(timeCheck.message);
+      return;
+    }
+
+    const pubCheck = validateCustomPublicationTime(
+      formData.examDate,
+      timeCheck.startTime,
+      formData.publicationTime
+    );
+    if (!pubCheck.valid) {
+      setFormError(pubCheck.message);
+      return;
+    }
+    if (pubCheck.isPast && !formData.confirmPastPublication) {
+      setFormError(
+        `Publication Time (${pubCheck.publicationTime}) is in the past. Please choose a future time or check the Admin past-publication override below.`
+      );
       return;
     }
 
@@ -846,6 +874,8 @@ const Examinations = () => {
       ...formData,
       startTime: timeCheck.startTime,
       endTime: timeCheck.endTime,
+      publicationTime: pubCheck.publicationTime,
+      confirmPastPublication: Boolean(formData.confirmPastPublication),
       allowOvernight: Boolean(formData.allowOvernight),
       selectedSections: activeMappings.map((m) => m.section),
       selectedMappingIds: activeMappings.map((m) => m.mappingId || m.id),
@@ -992,7 +1022,7 @@ const Examinations = () => {
           res.data.message ||
             (isApproveAction
               ? 'Examination approved by Admin. Click Publish to schedule/release to Student Portal.'
-              : 'Examination published according to configured T-20 schedule.')
+              : 'Examination published to the Student Portal release schedule.')
         );
         setPublishModalExam(null);
         setPublishModalError('');
@@ -1202,11 +1232,11 @@ const Examinations = () => {
               <Calendar size={20} />
             </span>
             <h1 className="text-xl font-bold text-navy-800">
-              Centralized Examination Management — Exam Incharge
+              Examination Requests, Approval &amp; Scheduling
             </h1>
           </div>
           <p className="text-xs text-slate-500 mt-1">
-            Exam Incharge schedules ONE examination per subject. All academic sections, groups, faculty members, and student rosters are automatically loaded from permanent mappings.
+            Review faculty-scheduled UNIT 1–5 examination requests, configure Student Portal publication times, approve seating, and manage section allocations.
           </p>
         </div>
 
@@ -1932,7 +1962,7 @@ const Examinations = () => {
                   <h3 className="text-base font-bold text-navy-800">
                     {editingExam
                       ? `Edit Examination — ${editingExam.examName || editingExam.subjectName}`
-                      : 'Centralized Examination Creation — Exam Incharge'}
+                      : 'Create Centralized Examination — Admin'}
                   </h3>
                 </div>
                 <p className="text-xs text-slate-500 mt-0.5">
@@ -2245,6 +2275,46 @@ const Examinations = () => {
                   </div>
                 </div>
 
+                {/* Mandatory Student Portal Publication Time */}
+                <div className="p-3 bg-white border border-slate-200 rounded-lg grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+                  <div>
+                    <TimeSelect12h
+                      idPrefix="admin-pub"
+                      label="Student Portal Publication Time (IST):"
+                      required
+                      value={formData.publicationTime}
+                      sessionHint={formData.session}
+                      onChange={(val) => setFormData((prev) => ({ ...prev, publicationTime: val }))}
+                    />
+                  </div>
+                  <div className="text-[11px] text-slate-600 space-y-1">
+                    <div>
+                      Controls exact time students can view their allocated hall &amp; seat (closes 10 minutes after start time).
+                    </div>
+                    {isAdmin &&
+                      validateCustomPublicationTime(
+                        formData.examDate,
+                        formData.startTime,
+                        formData.publicationTime
+                      ).isPast && (
+                        <label className="inline-flex items-center space-x-1.5 text-amber-800 font-semibold cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(formData.confirmPastPublication)}
+                            onChange={(e) =>
+                              setFormData((prev) => ({
+                                ...prev,
+                                confirmPastPublication: e.target.checked,
+                              }))
+                            }
+                            className="rounded border-amber-400 text-amber-600"
+                          />
+                          <span>Confirm past publication time (Admin override)</span>
+                        </label>
+                      )}
+                  </div>
+                </div>
+
                 <div className="px-3 py-2 bg-blue-50/70 border border-blue-200 rounded-lg text-[11px] text-navy-800 flex flex-wrap items-center justify-between gap-2">
                   <span className="font-semibold">
                     Schedule Preview: <span className="font-mono text-navy-900">{formatExamTimeRange({ startTime: formData.startTime, endTime: formData.endTime })}</span>
@@ -2270,7 +2340,7 @@ const Examinations = () => {
                       <span>Overnight (Ends Next Day)</span>
                     </label>
                     <span className="font-mono font-bold text-primary">
-                      Student Early Access: {computeVisibilityWindowLabel(formData.startTime)}
+                      Student Portal Publication: {computeVisibilityWindowLabel(formData.startTime, formData.publicationTime)}
                     </span>
                   </div>
                 </div>

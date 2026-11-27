@@ -45,11 +45,20 @@ const upload = multer({
   limits: { fileSize: 30 * 1024 * 1024 }, // 30 MB limit
   fileFilter: (req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
-    const mime = file.mimetype;
-    if (ext === '.pdf' || mime === 'application/pdf') {
+    const mime = String(file.mimetype || '').toLowerCase();
+    if (
+      ext === '.pdf' ||
+      ext === '.xlsx' ||
+      ext === '.xls' ||
+      ext === '.csv' ||
+      mime === 'application/pdf' ||
+      mime.includes('spreadsheet') ||
+      mime.includes('excel') ||
+      mime.includes('csv')
+    ) {
       cb(null, true);
     } else {
-      cb(new Error('Invalid file type. Only PDF documents are accepted for student roster upload.'));
+      cb(new Error('Invalid file type. Accepted formats: PDF, XLSX, XLS, and CSV.'));
     }
   },
 });
@@ -86,23 +95,23 @@ const handleUploadSinglePdf = (req, res, next) => {
   });
 };
 
-// All routes require authentication
-router.use(protect);
+// All routes require authentication (Admin & Faculty only)
+router.use(protect, authorize('admin', 'faculty'));
 
-// Background Job Endpoints for multi-page PDF parsing and large batch confirmation
-router.post('/jobs/upload-preview', handleUploadSinglePdf, startUploadPreviewJob);
-router.post('/jobs/confirm-batch', startConfirmBatchJob);
-router.get('/jobs', listMappingJobs);
-router.get('/jobs/:jobId', getMappingJobStatus);
-router.post('/jobs/:jobId/retry', retryMappingJobHandler);
+// Admin-only mapping import & batch persistence endpoints
+router.post('/jobs/upload-preview', authorize('admin'), handleUploadSinglePdf, startUploadPreviewJob);
+router.post('/jobs/confirm-batch', authorize('admin'), startConfirmBatchJob);
+router.get('/jobs', authorize('admin'), listMappingJobs);
+router.get('/jobs/:jobId', authorize('admin'), getMappingJobStatus);
+router.post('/jobs/:jobId/retry', authorize('admin'), retryMappingJobHandler);
 
-// Upload & Preview student roster PDF (Single 'file' field)
-router.post('/upload-preview', handleUploadSinglePdf, previewMappingPdf);
-router.post('/confirm', confirmMapping);
-router.post('/confirm-batch', confirmBatchMappings);
+// Admin-only upload preview & confirm endpoints
+router.post('/upload-preview', authorize('admin'), handleUploadSinglePdf, previewMappingPdf);
+router.post('/confirm', authorize('admin'), confirmMapping);
+router.post('/confirm-batch', authorize('admin'), confirmBatchMappings);
 router.route('/')
   .get(getMappings)
-  .post(authorize('admin', 'exam_incharge', 'incharge'), createMapping);
+  .post(authorize('admin'), createMapping);
 
 router.get('/portal-groups', getPortalGroups);
 router.get('/active-options', getActiveMappingOptions);
@@ -110,7 +119,7 @@ router.get('/lookup-students', lookupMappedStudents);
 
 router.route('/:id')
   .get(getMappingById)
-  .put(authorize('admin', 'exam_incharge', 'incharge'), updateMappingById)
+  .put(authorize('admin'), updateMappingById)
   .delete(authorize('admin'), deleteMapping);
 
 module.exports = router;

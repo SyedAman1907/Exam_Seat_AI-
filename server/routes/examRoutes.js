@@ -19,13 +19,13 @@ const {
 } = require('../controllers/examController');
 const { protect, authorize } = require('../middleware/auth');
 
-router.use(protect);
+router.use(protect, authorize('admin', 'faculty'));
 
-// Examination Mapping Resolution & Creation (Admin, Exam Incharge, and Faculty scoped to own mappings)
-router.get('/resolve-mappings', authorize('admin', 'exam_incharge', 'incharge', 'faculty'), resolveCentralizedMappings);
-router.get('/check-availability', authorize('admin', 'exam_incharge', 'incharge', 'faculty'), checkClassroomAvailability);
-router.post('/check-availability', authorize('admin', 'exam_incharge', 'incharge', 'faculty'), checkClassroomAvailability);
-router.post('/create-centralized', authorize('admin', 'exam_incharge', 'incharge', 'faculty'), createCentralizedExam);
+// Examination Mapping Resolution & Creation (Admin and Faculty scoped strictly to own mappings)
+router.get('/resolve-mappings', authorize('admin', 'faculty'), resolveCentralizedMappings);
+router.get('/check-availability', authorize('admin', 'faculty'), checkClassroomAvailability);
+router.post('/check-availability', authorize('admin', 'faculty'), checkClassroomAvailability);
+router.post('/create-centralized', authorize('admin', 'faculty'), createCentralizedExam);
 
 router.get('/roster-preview', getRosterPreview);
 router.post('/:id/retry', retryExam);

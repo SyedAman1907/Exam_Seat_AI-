@@ -16,13 +16,18 @@ const {
   persistPreparedMapping,
 } = require('../services/mappingPersistenceService');
 const mappingJobService = require('../services/mappingJobService');
+const {
+  isSpreadsheetFile,
+  parseSpreadsheetMappings,
+  detectInconsistentStudentNames,
+} = require('../services/mappingImportService');
 const fs = require('fs');
 
 /**
- * @desc    Upload student PDF and generate mapping preview
- *          Intelligently supports multi-page nominal lists containing multiple subject-wise rosters
+ * @desc    Upload student PDF or Excel/CSV and generate mapping preview
+ *          Supports multi-page nominal PDFs and structured Excel/CSV rosters
  * @route   POST /api/mappings/upload-preview
- * @access  Private (Admin)
+ * @access  Private (Admin Only)
  */
 exports.previewMappingPdf = async (req, res) => {
   const uploadedFiles = req.file ? [req.file] : (req.files || []);
@@ -30,14 +35,38 @@ exports.previewMappingPdf = async (req, res) => {
   if (!uploadedFiles || uploadedFiles.length === 0) {
     return res.status(400).json({
       success: false,
-      message: 'Please upload a student roster PDF file.',
+      message: 'Please upload a student roster file (PDF, XLSX, XLS, or CSV).',
     });
   }
 
   const file = uploadedFiles[0];
 
   try {
-    // 1. Attempt multi-subject intelligent extraction
+    // 0. Excel / CSV structured import branch
+    if (isSpreadsheetFile(file.path, file.originalname)) {
+      const sheetResult = await parseSpreadsheetMappings(file.path, file.originalname, req.body || {});
+      const inconsistentNames = await detectInconsistentStudentNames(sheetResult.mappings);
+      uploadedFiles.forEach((f) => {
+        try {
+          if (f.path && fs.existsSync(f.path)) fs.unlinkSync(f.path);
+        } catch {}
+      });
+
+      return res.status(200).json({
+        success: true,
+        isMultiRoster: sheetResult.isMultiRoster,
+        inconsistentNames,
+        summary: {
+          ...sheetResult.summary,
+          inconsistentNamesCount: inconsistentNames.length,
+          inconsistentNames,
+        },
+        mappings: sheetResult.mappings,
+        students: sheetResult.mappings.flatMap((m) => m.students),
+      });
+    }
+
+    // 1. Attempt multi-subject intelligent PDF extraction
     let multiResult = null;
     try {
       multiResult = await PdfExtractorService.extractMultiSubjectRosters(
@@ -51,6 +80,7 @@ exports.previewMappingPdf = async (req, res) => {
 
     // 2. If multi-roster extraction detected subject blocks (e.g. 27 distinct subject-wise nominal lists)
     if (multiResult && multiResult.mappings && multiResult.mappings.length > 0) {
+      const inconsistentNames = await detectInconsistentStudentNames(multiResult.mappings);
       // Cleanup uploaded temp files
       uploadedFiles.forEach((f) => {
         try {
@@ -61,7 +91,12 @@ exports.previewMappingPdf = async (req, res) => {
       return res.status(200).json({
         success: true,
         isMultiRoster: multiResult.isMultiRoster,
-        summary: multiResult.summary,
+        inconsistentNames,
+        summary: {
+          ...(multiResult.summary || {}),
+          inconsistentNamesCount: inconsistentNames.length,
+          inconsistentNames,
+        },
         mappings: multiResult.mappings,
         // Flat students array for backwards compatibility
         students: multiResult.mappings.flatMap((m) => m.students),
@@ -1159,26 +1194,33 @@ exports.createMapping = async (req, res) => {
     const cleanFaculty = facultyName.trim();
     const cleanGroup = group || (['A1', 'A2', 'A3'].includes(cleanSection) ? 'Group A' : 'Group B');
 
-    // Verify / ensure Subject exists in Subject master collection
-    let subjectDoc = await Subject.findOne({ subjectCode: cleanSubCode });
+    // Verify / ensure Subject exists in Subject master collection (scoped by subjectCode + academicYear + semester)
+    let subjectDoc = await Subject.findOne({ subjectCode: cleanSubCode, academicYear, semester });
     if (!subjectDoc) {
       subjectDoc = await Subject.create({
         subjectName: cleanSubName,
         subjectCode: cleanSubCode,
-        abbreviation: cleanSubCode.substring(0, 4),
+        abbreviation: cleanSubCode.substring(0, 6),
         department,
         year,
         semester,
         academicYear,
+        group: cleanGroup,
+        sections: [cleanSection],
         isActive: true,
       });
     }
 
     // Verify Faculty User ID if not provided
     let verifiedFacultyId = facultyId;
+    const cleanFacultyIdCode = String(req.body?.facultyIdCode || '').trim().toUpperCase();
     if (!verifiedFacultyId) {
       const facUser = await User.findOne({
-        name: { $regex: new RegExp(`^${cleanFaculty.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+        role: 'faculty',
+        $or: [
+          ...(cleanFacultyIdCode ? [{ facultyId: cleanFacultyIdCode }] : []),
+          { name: { $regex: new RegExp(`^${cleanFaculty.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } },
+        ],
       });
       if (facUser) verifiedFacultyId = facUser._id;
     }

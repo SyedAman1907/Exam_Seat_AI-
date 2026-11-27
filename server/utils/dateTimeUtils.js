@@ -293,6 +293,65 @@ function getPublicationTime(startDateTime) {
 const getStudentAccessTime = getPublicationTime;
 
 /**
+ * Resolves and validates a mandatory custom Student Portal Publication Time in Asia/Kolkata (+05:30).
+ * Validates that publicationTime is strictly earlier than startDateTime and, unless explicitly permitted
+ * by Admin override, not earlier than the current clock time.
+ */
+function resolveCustomPublicationDateTime({
+  examDate,
+  startDateTime,
+  publicationTime,
+  now = new Date(),
+  allowPastPublication = false,
+} = {}) {
+  if (!publicationTime || !String(publicationTime).trim()) {
+    const err = new Error('Student Portal Publication Time is required.');
+    err.code = 'MISSING_PUBLICATION_TIME';
+    err.statusCode = 400;
+    throw err;
+  }
+
+  let canonicalPub;
+  let pubDateTime;
+  if (publicationTime instanceof Date) {
+    if (isNaN(publicationTime.getTime())) {
+      const err = new Error('Invalid Student Portal Publication Time.');
+      err.code = 'INVALID_PUBLICATION_TIME';
+      err.statusCode = 400;
+      throw err;
+    }
+    pubDateTime = publicationTime;
+    canonicalPub = formatTime12h(pubDateTime);
+  } else {
+    canonicalPub = formatTime12h(String(publicationTime).trim(), '');
+    pubDateTime = parseKolkataDateTime(examDate, canonicalPub);
+  }
+
+  if (startDateTime && pubDateTime >= startDateTime) {
+    const err = new Error(
+      `Invalid Student Portal Publication Time (${canonicalPub}): Publication time must be strictly earlier than Examination Start Time.`
+    );
+    err.code = 'PUBLICATION_AFTER_START';
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (!allowPastPublication && now && pubDateTime < now) {
+    const err = new Error(
+      `Selected Student Portal Publication Time (${canonicalPub}) is earlier than the current time. Please select a future publication time.`
+    );
+    err.code = 'PAST_PUBLICATION_TIME';
+    err.statusCode = 400;
+    throw err;
+  }
+
+  return {
+    publicationTime: pubDateTime,
+    publicationTimeStr: canonicalPub,
+  };
+}
+
+/**
  * Computes the seating visibility window close time:
  * 10 minutes after scheduled exam start time, capped at exam endTime if shorter.
  */
@@ -386,6 +445,7 @@ module.exports = {
   parseExamDateRange,
   getPublicationTime,
   getStudentAccessTime,
+  resolveCustomPublicationDateTime,
   getSeatingWindowCloseTime,
   getEffectiveNow,
   isSeatingVisible,

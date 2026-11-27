@@ -162,7 +162,15 @@ export function validateExamTimeRange(startTimeStr, endTimeStr, opts = {}) {
   };
 }
 
-export function computeStudentAccessInfo(startTimeStr) {
+export function computeStudentAccessInfo(startTimeStr, customPubTimeStr = '') {
+  if (customPubTimeStr && String(customPubTimeStr).trim()) {
+    const canonical = formatTime12h(customPubTimeStr, startTimeStr);
+    return {
+      accessTimeFormatted: canonical,
+      isPreviousDay: false,
+      label: `${canonical} IST (Configured Publication Time)`,
+    };
+  }
   const { hour, minute, period } = parse12HourParts(startTimeStr);
   let h = parseInt(hour, 10);
   const m = parseInt(minute, 10);
@@ -170,7 +178,7 @@ export function computeStudentAccessInfo(startTimeStr) {
   if (period === 'AM' && h === 12) h = 0;
 
   const startMins = h * 60 + m;
-  const rawAccessMins = startMins - 20;
+  const rawAccessMins = startMins - 10;
   const isPreviousDay = rawAccessMins < 0;
   const accessMins = ((rawAccessMins % (24 * 60)) + 24 * 60) % (24 * 60);
   const ah24 = Math.floor(accessMins / 60);
@@ -183,10 +191,48 @@ export function computeStudentAccessInfo(startTimeStr) {
   return {
     accessTimeFormatted,
     isPreviousDay,
-    label: `${accessTimeFormatted} IST${isPreviousDay ? ' (prev. day)' : ''} (20 min before start)`,
+    label: `${accessTimeFormatted} IST${isPreviousDay ? ' (prev. day)' : ''}`,
   };
 }
 
-export function computeVisibilityWindowLabel(startTimeStr) {
-  return computeStudentAccessInfo(startTimeStr).label;
+export function subtractMinutes12h(timeStr, mins = 10) {
+  const totalMins = (((toMinutesFromMidnight(timeStr) - mins) % (24 * 60)) + 24 * 60) % (24 * 60);
+  const h24 = Math.floor(totalMins / 60);
+  const mm = totalMins % 60;
+  const period = h24 >= 12 ? 'PM' : 'AM';
+  let h12 = h24 % 12;
+  if (h12 === 0) h12 = 12;
+  return `${String(h12).padStart(2, '0')}:${String(mm).padStart(2, '0')} ${period}`;
+}
+
+export function validateCustomPublicationTime(examDate, startTimeStr, pubTimeStr) {
+  if (!pubTimeStr || !String(pubTimeStr).trim()) {
+    return { valid: false, message: 'Student Portal Publication Time is mandatory.' };
+  }
+  const startCanonical = formatTime12h(startTimeStr);
+  const pubCanonical = formatTime12h(pubTimeStr);
+  if (!examDate) {
+    return toMinutesFromMidnight(pubCanonical) < toMinutesFromMidnight(startCanonical)
+      ? { valid: true, publicationTime: pubCanonical }
+      : { valid: false, message: `Publication Time (${pubCanonical}) must be strictly before Start Time (${startCanonical}).` };
+  }
+
+  const sTime24 = to24Hour(startCanonical);
+  const pTime24 = to24Hour(pubCanonical);
+  const startDt = new Date(`${examDate}T${sTime24}:00+05:30`);
+  const pubDt = new Date(`${examDate}T${pTime24}:00+05:30`);
+  if (isNaN(startDt.getTime()) || isNaN(pubDt.getTime())) {
+    return { valid: false, message: 'Invalid date or publication time format.' };
+  }
+  if (pubDt >= startDt) {
+    return {
+      valid: false,
+      message: `Student Portal Publication Time (${pubCanonical}) must be strictly earlier than Examination Start Time (${startCanonical}).`,
+    };
+  }
+  return { valid: true, publicationTime: pubCanonical, isPast: pubDt < new Date() };
+}
+
+export function computeVisibilityWindowLabel(startTimeStr, customPubTimeStr = '') {
+  return computeStudentAccessInfo(startTimeStr, customPubTimeStr).label;
 }

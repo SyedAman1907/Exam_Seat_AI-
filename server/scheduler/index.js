@@ -358,24 +358,14 @@ class PublicationScheduler {
 
       if (mongoose.connection.readyState !== 1) return 0;
 
-      // 2. Find all approved exams scheduled for publication that haven't ended yet
+      // 2. Find all ADMIN-APPROVED exams scheduled for publication that haven't ended yet
       const pendingExams = await Exam.find({
         isDeleted: { $ne: true },
-        status: { $nin: ['FAILED', 'COMPLETED', 'CANCELLED', 'ONGOING', 'PUBLISHED'] },
+        approvalStatus: 'APPROVED',
+        status: { $nin: ['FAILED', 'COMPLETED', 'CANCELLED', 'ONGOING', 'PUBLISHED', 'DRAFT'] },
         allocationStatus: { $ne: 'FAILED' },
-        approvalStatus: { $nin: ['CANCELLED', 'REJECTED', 'DRAFT'] },
-        $or: [
-          {
-            approvalStatus: 'APPROVED',
-            visibilityStatus: 'SCHEDULED',
-            publicationTime: { $lte: now },
-          },
-          {
-            status: { $in: ['SCHEDULED', 'GENERATED', 'ALLOCATED', 'VERIFIED'] },
-            visibilityStatus: { $ne: 'PUBLISHED' },
-            publicationTime: { $lte: now },
-          },
-        ],
+        visibilityStatus: { $ne: 'PUBLISHED' },
+        publicationTime: { $lte: now },
       })
         .select('_id examDate endTime endDateTime')
         .lean();
@@ -423,9 +413,15 @@ class PublicationScheduler {
         return { success: false, message: 'Examination not found.' };
       }
 
-      // Prevent publication of cancelled examinations
+      // Prevent publication of unapproved, cancelled, or completed examinations
       if (exam.approvalStatus === 'CANCELLED' || exam.status === 'CANCELLED') {
         return { success: false, message: 'Cannot publish cancelled examination.' };
+      }
+      if (exam.status === 'COMPLETED') {
+        return { success: false, message: 'Cannot publish completed examination.' };
+      }
+      if (exam.approvalStatus !== 'APPROVED') {
+        return { success: false, message: 'Only Admin-approved examinations can be published.' };
       }
 
       // If already published/ongoing, return idempotent success
@@ -457,23 +453,20 @@ class PublicationScheduler {
 
       const now = new Date();
 
-      // Atomic update on Exam
+      // Atomic update on Exam (strictly requires approvalStatus: 'APPROVED')
       const updatedExam = await Exam.findOneAndUpdate(
         {
           _id: exam._id,
-          $or: [
-            { approvalStatus: 'APPROVED', visibilityStatus: 'SCHEDULED' },
-            { status: { $in: ['SCHEDULED', 'GENERATED', 'ALLOCATED', 'VERIFIED', 'FAILED'] } },
-          ],
-          approvalStatus: { $ne: 'CANCELLED' },
-          status: { $nin: ['PUBLISHED', 'ONGOING', 'COMPLETED', 'CANCELLED'] },
+          approvalStatus: 'APPROVED',
+          status: { $nin: ['PUBLISHED', 'ONGOING', 'COMPLETED', 'CANCELLED', 'DRAFT'] },
+          visibilityStatus: { $ne: 'PUBLISHED' },
         },
         {
           $set: {
-            approvalStatus: 'APPROVED',
             visibilityStatus: 'PUBLISHED',
             status: 'PUBLISHED',
             publishedAt: now,
+            publicationConfirmedAt: exam.publicationConfirmedAt || now,
             lastError: '',
           },
         },

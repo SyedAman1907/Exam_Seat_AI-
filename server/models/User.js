@@ -20,13 +20,29 @@ const userSchema = new mongoose.Schema({
     lowercase: true,
     trim: true,
   },
+  facultyId: {
+    type: String,
+    trim: true,
+    uppercase: true,
+    sparse: true,
+    index: true,
+  },
+  registrationNumber: {
+    type: String,
+    trim: true,
+    uppercase: true,
+    sparse: true,
+    index: true,
+  },
   passwordHash: {
     type: String,
-    required: [true, 'Password is required'],
+    required: function requiredPassword() {
+      return this.role !== 'student';
+    },
   },
   role: {
     type: String,
-    enum: ['admin', 'faculty', 'exam_incharge', 'incharge'],
+    enum: ['admin', 'faculty', 'student'],
     default: 'faculty',
   },
   department: {

@@ -34,6 +34,8 @@ import {
   formatExamTimeRange,
   formatTime12h,
   validateExamTimeRange,
+  validateCustomPublicationTime,
+  subtractMinutes12h,
   normalizeSessionCode,
   formatSessionLabel,
   toMinutesFromMidnight,
@@ -50,7 +52,6 @@ const FacultyPortal = () => {
   const navigate = useNavigate();
 
   const isAdmin = user?.role === 'admin';
-  const isExamIncharge = user?.role === 'exam_incharge' || user?.role === 'incharge' || isAdmin;
 
   // Portal State
   const [loading, setLoading] = useState(true);
@@ -91,6 +92,7 @@ const FacultyPortal = () => {
     examDate: getTodayKolkataIso(),
     startTime: '09:00 AM',
     endTime: '12:00 PM',
+    publicationTime: '08:50 AM',
     session: 'AM',
     group: 'ALL',
   });
@@ -127,7 +129,7 @@ const FacultyPortal = () => {
       const params = new URLSearchParams();
       if (selectedAcademicYear !== 'ALL') params.append('academicYear', selectedAcademicYear);
       if (selectedSemester !== 'ALL') params.append('semester', selectedSemester);
-      if (isExamIncharge && selectedFaculty !== 'ALL') params.append('faculty', selectedFaculty);
+      if (isAdmin && selectedFaculty !== 'ALL') params.append('faculty', selectedFaculty);
 
       const examParams = new URLSearchParams();
       if (selectedAcademicYear !== 'ALL') examParams.append('academicYear', selectedAcademicYear);
@@ -220,10 +222,10 @@ const FacultyPortal = () => {
   }, [subjects, deferredSearchQuery]);
 
   // Subjects available for scheduling:
-  // Normal faculty see ONLY their own permanently mapped subjects; Exam Incharge/Admin see all department subjects.
+  // Faculty see ONLY their own permanently mapped subjects; Admin sees all department subjects.
   const availableScheduleSubjects = useMemo(() => {
     const list = [...subjects];
-    if (!isExamIncharge) {
+    if (!isAdmin) {
       return list;
     }
     const seenCodes = new Set(list.map((s) => (s.subjectCode || '').toUpperCase()));
@@ -240,7 +242,7 @@ const FacultyPortal = () => {
       }
     });
     return list;
-  }, [subjects, dbSubjects, isExamIncharge]);
+  }, [subjects, dbSubjects, isAdmin]);
   const handleOpenRoster = async (sectionItem, subjectItem) => {
     try {
       setActiveSectionMapping({
@@ -341,6 +343,7 @@ const FacultyPortal = () => {
       examDate: getTodayKolkataIso(),
       startTime: '09:00 AM',
       endTime: '12:00 PM',
+      publicationTime: '08:50 AM',
       session: 'AM',
       group: 'ALL',
     });
@@ -373,6 +376,10 @@ const FacultyPortal = () => {
       examDate: exam.examDate || getTodayKolkataIso(),
       startTime: formatTime12h(exam.startTime, isPM ? '02:00 PM' : '09:00 AM'),
       endTime: formatTime12h(exam.endTime, isPM ? '05:00 PM' : '12:00 PM'),
+      publicationTime: formatTime12h(
+        exam.publicationTimeStr || exam.publicationTime,
+        subtractMinutes12h(formatTime12h(exam.startTime, isPM ? '02:00 PM' : '09:00 AM'), 10)
+      ),
       session: normSess,
       group: exam.group || 'ALL',
       allowOvernight: Boolean(exam.allowOvernight),
@@ -401,6 +408,7 @@ const FacultyPortal = () => {
           ? {
               startTime: isPM ? '02:00 PM' : '09:00 AM',
               endTime: isPM ? '05:00 PM' : '12:00 PM',
+              publicationTime: isPM ? '01:50 PM' : '08:50 AM',
             }
           : {}),
       };
@@ -440,6 +448,21 @@ const FacultyPortal = () => {
       setExamFormError(timeCheck.message);
       return;
     }
+    const pubCheck = validateCustomPublicationTime(
+      examForm.examDate,
+      timeCheck.startTime,
+      examForm.publicationTime
+    );
+    if (!pubCheck.valid) {
+      setExamFormError(pubCheck.message);
+      return;
+    }
+    if (pubCheck.isPast) {
+      setExamFormError(
+        `Student Portal Publication Time (${pubCheck.publicationTime}) is earlier than current time. Please choose a future publication time.`
+      );
+      return;
+    }
     if (!activeSelectedSectionObjects || activeSelectedSectionObjects.length === 0) {
       setExamFormError(
         `Please select at least one assigned section for ${examForm.subjectName}.`
@@ -462,8 +485,9 @@ const FacultyPortal = () => {
         year: examForm.year,
         semester: examForm.semester,
         examDate: examForm.examDate,
-        startTime: examForm.startTime,
-        endTime: examForm.endTime,
+        startTime: timeCheck.startTime,
+        endTime: timeCheck.endTime,
+        publicationTime: pubCheck.publicationTime,
         session: examForm.session,
         group: examForm.group,
         selectedSections: activeSelectedSectionObjects.map((s) => s.section),
@@ -685,12 +709,10 @@ const FacultyPortal = () => {
                   className={`px-1.5 py-0.2 rounded text-[10px] font-bold uppercase tracking-wider ${
                     isAdmin
                       ? 'bg-purple-100 text-purple-800'
-                      : isExamIncharge
-                      ? 'bg-blue-100 text-primary'
                       : 'bg-emerald-100 text-emerald-800'
                   }`}
                 >
-                  {isAdmin ? 'Admin' : isExamIncharge ? 'Exam Incharge' : 'Faculty'}
+                  {isAdmin ? 'Admin' : 'Faculty'}
                 </span>
               </div>
               <div className="text-[11px] text-slate-500 font-mono truncate max-w-[200px]">
@@ -770,8 +792,8 @@ const FacultyPortal = () => {
               </select>
             </div>
 
-            {/* Faculty Filter (Only for Exam Incharge / Admin) */}
-            {isExamIncharge && filterOptions.faculties?.length > 0 && (
+            {/* Faculty Filter (Only for Admin) */}
+            {isAdmin && filterOptions.faculties?.length > 0 && (
               <div className="flex items-center space-x-1.5">
                 <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider">
                   Faculty:
@@ -892,8 +914,8 @@ const FacultyPortal = () => {
             <p className="text-xs text-slate-500 max-w-md mx-auto">
               {searchQuery
                 ? `No courses match your search query "${searchQuery}". Try clearing filters.`
-                : !isExamIncharge
-                ? `No permanent subject sections have been assigned to ${user?.name || 'your account'} yet. Contact your department Exam Incharge or Administrator.`
+                : !isAdmin
+                ? `No permanent subject sections have been assigned to ${user?.name || 'your account'} yet. Contact the Examination Administrator.`
                 : 'No active permanent mappings found in the database. Please verify Faculty & Student Assignment configurations.'}
             </p>
             {searchQuery && (
@@ -1197,9 +1219,7 @@ const FacultyPortal = () => {
                   <h3 className="text-base font-bold text-navy-800 tracking-tight">
                     {editingExam
                       ? `Edit Examination — ${editingExam.examName}`
-                      : isExamIncharge
-                      ? 'Create Examination — Exam Incharge'
-                      : 'Create New Examination — Faculty Portal'}
+                      : 'Request Examination Schedule — Faculty Portal'}
                   </h3>
                 </div>
                 <p className="text-xs text-slate-500 mt-0.5">
@@ -1569,12 +1589,26 @@ const FacultyPortal = () => {
                   ) : null;
                 })()}
 
+                <div className="p-3 bg-white border border-slate-200 rounded-lg grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+                  <TimeSelect12h
+                    label="Student Portal Publication Time (IST):"
+                    required
+                    idPrefix="faculty-pub"
+                    value={examForm.publicationTime}
+                    sessionHint={examForm.session}
+                    onChange={(val) => setExamForm((prev) => ({ ...prev, publicationTime: val }))}
+                  />
+                  <div className="text-[11px] text-slate-600">
+                    Students see their countdown until this time and view only their own seat up to 10 minutes after exam start.
+                  </div>
+                </div>
+
                 <div className="px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg text-[11px] text-navy-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
                   <span className="font-semibold">
-                    Student Early Access (20 Minutes Before Start):
+                    Student Portal Publication Schedule:
                   </span>
                   <span className="font-mono font-bold text-primary">
-                    {computeVisibilityWindowLabel(examForm.startTime)}
+                    {computeVisibilityWindowLabel(examForm.startTime, examForm.publicationTime)}
                   </span>
                 </div>
 

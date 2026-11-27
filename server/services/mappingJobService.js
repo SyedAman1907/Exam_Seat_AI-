@@ -4,6 +4,11 @@ const AuditLog = require('../models/AuditLog');
 const PdfExtractorService = require('./pdfExtractorService');
 const StudentClassificationService = require('./studentClassificationService');
 const {
+  isSpreadsheetFile,
+  parseSpreadsheetMappings,
+  detectInconsistentStudentNames,
+} = require('./mappingImportService');
+const {
   validateAndPrepareMappingItem,
   prefetchContextForMappings,
   persistPreparedMapping,
@@ -67,7 +72,14 @@ async function processUploadPreviewJob(jobId, { filePath, originalName, uploadMo
     );
 
     let resultPayload = null;
-    if (uploadMode !== 'single') {
+    if (isSpreadsheetFile(filePath, originalName)) {
+      const sheetResult = await parseSpreadsheetMappings(filePath, originalName, body || {});
+      resultPayload = {
+        isMultiRoster: sheetResult.isMultiRoster,
+        summary: sheetResult.summary,
+        previewMappings: sheetResult.mappings,
+      };
+    } else if (uploadMode !== 'single') {
       try {
         const multiResult = await PdfExtractorService.extractMultiSubjectRosters(filePath, originalName, body || {});
         if (multiResult && Array.isArray(multiResult.mappings) && multiResult.mappings.length > 0) {
@@ -146,6 +158,13 @@ async function processUploadPreviewJob(jobId, { filePath, originalName, uploadMo
         },
       };
     }
+
+    const inconsistentNames = await detectInconsistentStudentNames(resultPayload.previewMappings || []);
+    resultPayload.summary = {
+      ...(resultPayload.summary || {}),
+      inconsistentNamesCount: inconsistentNames.length,
+      inconsistentNames,
+    };
 
     const totalExtractedRosters = resultPayload.previewMappings.length;
     await MappingJob.updateOne(

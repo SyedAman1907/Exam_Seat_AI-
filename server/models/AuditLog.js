@@ -34,7 +34,8 @@ const auditLogSchema = new mongoose.Schema({
       'REPORT_GENERATED',
       'SUBJECT_CREATED',
       'SUBJECT_UPDATED',
-      'SUBJECT_DEACTIVATED'
+      'SUBJECT_DEACTIVATED',
+      'SYSTEM_ACADEMIC_RESET'
     ],
   },
   performedBy: {

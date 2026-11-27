@@ -21,6 +21,7 @@ async function runBulkWriteChunked(Model, ops, session = null) {
 function validateAndPrepareMappingItem(rawMapping, idx = 0, defaultSourceFileName = 'Uploaded Nominal PDF') {
   const rNum = idx + 1;
   const cleanFaculty = String(rawMapping?.facultyName || '').trim();
+  const cleanFacultyIdCode = String(rawMapping?.facultyIdCode || rawMapping?.facultyCode || '').trim().toUpperCase();
   const cleanSubName = String(rawMapping?.subjectName || '').trim();
   const cleanSubCode = String(rawMapping?.subjectCode || '').trim().toUpperCase();
   const cleanSection = String(rawMapping?.section || '').trim().toUpperCase();
@@ -34,6 +35,7 @@ function validateAndPrepareMappingItem(rawMapping, idx = 0, defaultSourceFileNam
   const cleanAcadYear = rawMapping?.academicYear || '2026-2027';
   const cleanYear = rawMapping?.year || 'III Year';
   const cleanSemester = rawMapping?.semester || 'I Semester';
+  const cleanDepartment = String(rawMapping?.department || 'Computer Science and Engineering').trim();
   const mStudents = Array.isArray(rawMapping?.students) ? rawMapping.students : [];
   const errors = [];
 
@@ -92,6 +94,7 @@ function validateAndPrepareMappingItem(rawMapping, idx = 0, defaultSourceFileNam
     prepared: {
       index: idx,
       cleanFaculty,
+      cleanFacultyIdCode,
       cleanSubName,
       cleanSubCode,
       cleanSection,
@@ -99,6 +102,7 @@ function validateAndPrepareMappingItem(rawMapping, idx = 0, defaultSourceFileNam
       cleanAcadYear,
       cleanYear,
       cleanSemester,
+      cleanDepartment,
       deduplicatedStudents,
       sourceFileName: defaultSourceFileName || rawMapping?.sourceFileName || 'Uploaded Nominal PDF',
     },
@@ -129,10 +133,10 @@ async function prefetchContextForMappings(preparedList, session = null) {
   );
   if (session) existingQuery.session(session);
 
-  const facultyQuery = User.find({ role: 'faculty' }).select('_id name').lean();
+  const facultyQuery = User.find({ role: 'faculty' }).select('_id name facultyId').lean();
   const subjectCodes = Array.from(new Set(preparedList.map((vm) => vm.cleanSubCode)));
   const subjectQuery = Subject.find({ subjectCode: { $in: subjectCodes } })
-    .select('_id subjectCode')
+    .select('_id subjectCode academicYear semester')
     .lean();
 
   const [existingDocs, facultyUsers, existingSubjects] = await Promise.all([
@@ -158,9 +162,16 @@ async function prefetchContextForMappings(preparedList, session = null) {
     if (u.name) {
       facultyUserByName.set(u.name.trim().toLowerCase(), u._id);
     }
+    if (u.facultyId) {
+      facultyUserByName.set(`id:${String(u.facultyId).trim().toUpperCase()}`, u._id);
+    }
   }
 
-  const subjectCodeSet = new Set(existingSubjects.map((s) => String(s.subjectCode || '').toUpperCase()));
+  const subjectCodeSet = new Set(
+    existingSubjects.map(
+      (s) => `${String(s.subjectCode || '').toUpperCase()}__${s.academicYear || ''}__${s.semester || ''}`
+    )
+  );
 
   return { existingByKey, facultyUserByName, subjectCodeSet };
 }
@@ -251,6 +262,7 @@ async function persistPreparedMapping(vm, opts = {}) {
 
   const {
     cleanFaculty,
+    cleanFacultyIdCode = '',
     cleanSubName,
     cleanSubCode,
     cleanSection,
@@ -258,30 +270,34 @@ async function persistPreparedMapping(vm, opts = {}) {
     cleanAcadYear,
     cleanYear,
     cleanSemester,
+    cleanDepartment = 'Computer Science and Engineering',
     deduplicatedStudents,
     sourceFileName,
   } = vm;
 
-  // Ensure Subject master record exists (avoiding duplicate DB queries when prefetched)
-  if (subjectCodeSet && !subjectCodeSet.has(cleanSubCode)) {
+  // Ensure Subject master record exists (compound keyed by subjectCode + academicYear + semester)
+  const subKey = `${cleanSubCode}__${cleanAcadYear}__${cleanSemester}`;
+  if (subjectCodeSet && !subjectCodeSet.has(subKey)) {
     try {
       await Subject.updateOne(
-        { subjectCode: cleanSubCode },
+        { subjectCode: cleanSubCode, academicYear: cleanAcadYear, semester: cleanSemester },
         {
           $setOnInsert: {
             subjectName: cleanSubName,
             subjectCode: cleanSubCode,
             abbreviation: cleanSubCode.substring(0, 6),
-            department: 'Computer Science and Engineering',
+            department: cleanDepartment,
             year: cleanYear,
             semester: cleanSemester,
             academicYear: cleanAcadYear,
+            group: cleanGroup,
+            sections: [cleanSection],
             isActive: true,
           },
         },
         session ? { upsert: true, session } : { upsert: true }
       );
-      subjectCodeSet.add(cleanSubCode);
+      subjectCodeSet.add(subKey);
     } catch {}
   }
 
@@ -370,13 +386,18 @@ async function persistPreparedMapping(vm, opts = {}) {
   const nextVersion = existing ? (existing.version || 1) + 1 : 1;
 
   let facultyUserId = facultyUserByName
-    ? facultyUserByName.get(cleanFaculty.toLowerCase()) || null
+    ? (cleanFacultyIdCode ? facultyUserByName.get(`id:${cleanFacultyIdCode}`) : null) ||
+      facultyUserByName.get(cleanFaculty.toLowerCase()) ||
+      null
     : null;
   if (!facultyUserId && !facultyUserByName) {
     try {
       const facultyUser = await User.findOne({
-        name: { $regex: new RegExp(`^${cleanFaculty.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
         role: 'faculty',
+        $or: [
+          ...(cleanFacultyIdCode ? [{ facultyId: cleanFacultyIdCode }] : []),
+          { name: { $regex: new RegExp(`^${cleanFaculty.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } },
+        ],
       })
         .select('_id')
         .lean();
@@ -385,14 +406,15 @@ async function persistPreparedMapping(vm, opts = {}) {
   }
 
   const newMapping = new FacultyMapping({
-    facultyId: facultyUserId || (user ? user._id : undefined),
+    facultyId: facultyUserId || undefined,
+    facultyIdCode: cleanFacultyIdCode,
     facultyName: cleanFaculty,
     subjectName: cleanSubName,
     subjectCode: cleanSubCode,
     section: cleanSection,
     group: cleanGroup,
     academicYear: cleanAcadYear,
-    department: 'Computer Science and Engineering',
+    department: cleanDepartment,
     year: cleanYear,
     semester: cleanSemester,
     version: nextVersion,

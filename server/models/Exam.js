@@ -10,7 +10,7 @@ const examSchema = new mongoose.Schema({
   examType: {
     type: String,
     enum: EXAM_TYPES,
-    default: 'MID-TERM 1',
+    default: 'UNIT 1',
     trim: true,
     uppercase: true,
     index: true,
@@ -90,6 +90,11 @@ const examSchema = new mongoose.Schema({
   },
   publicationTime: {
     type: Date,
+  },
+  publicationTimeStr: {
+    type: String,
+    default: '',
+    trim: true,
   },
   publicationStatus: {
     type: String,
@@ -192,7 +197,7 @@ const examSchema = new mongoose.Schema({
   ],
   createdByRole: {
     type: String,
-    default: 'exam_incharge',
+    default: 'faculty',
   },
   rosterId: {
     type: mongoose.Schema.Types.ObjectId,

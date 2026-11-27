@@ -29,11 +29,12 @@ const {
   isSameSessionPolarity,
   formatSessionLabel,
   getPublicationTime,
+  resolveCustomPublicationDateTime,
   normalizeDateStr,
   getTodayKolkataDate,
   getEffectiveNow,
 } = require('../utils/dateTimeUtils');
-const { normalizeExamType, resolveExamType } = require('../utils/examTypeUtils');
+const { normalizeExamType, resolveExamType, isValidUnitExamType } = require('../utils/examTypeUtils');
 
 async function runWithOptionalTransaction(workFn) {
   let session = null;
@@ -429,11 +430,19 @@ exports.createExam = async (req, res) => {
     const examGroup = group || 'Group A';
     const targetSection = (section || 'A1').trim().toUpperCase();
 
-    // 1. Mandatory Fields Validation
+    // 1. Mandatory Fields & Strict Unit Exam Type Validation
     if (!examName || !subjectName || !subjectCode || !examDate || !classroomId) {
       return res.status(400).json({
         success: false,
         message: 'Please fill in all mandatory examination details.',
+      });
+    }
+
+    if (!isValidUnitExamType(examType)) {
+      return res.status(400).json({
+        success: false,
+        code: 'INVALID_EXAM_TYPE',
+        message: 'Examination Type is mandatory and must be one of: UNIT 1, UNIT 2, UNIT 3, UNIT 4, or UNIT 5.',
       });
     }
 
@@ -458,7 +467,25 @@ exports.createExam = async (req, res) => {
     const startDateTime = range.startDateTime;
     const endDateTime = range.endDateTime;
 
-    const publicationTime = getPublicationTime(startDateTime);
+    let pubResolved;
+    try {
+      pubResolved = resolveCustomPublicationDateTime({
+        examDate: normDate,
+        startDateTime,
+        publicationTime: req.body.publicationTime,
+        now: getEffectiveNow(req),
+        allowPastPublication:
+          req.user?.role === 'admin' && Boolean(req.body.confirmPastPublication || req.body.allowPastPublication),
+      });
+    } catch (pubErr) {
+      return res.status(pubErr.statusCode || 400).json({
+        success: false,
+        code: pubErr.code || 'INVALID_PUBLICATION_TIME',
+        message: pubErr.message,
+      });
+    }
+    const publicationTime = pubResolved.publicationTime;
+    const publicationTimeStr = pubResolved.publicationTimeStr;
 
     // 3. Classroom Validation & Scheduling Conflict Check (strict interval overlap)
     const classroom = await Classroom.findById(classroomId);
@@ -514,11 +541,22 @@ exports.createExam = async (req, res) => {
     }
 
     // 5. Query Permanently Mapped Students for Subject & Section
-    let mapping = await FacultyMapping.findOne({
+    const mappingQuery = {
       subjectCode: subjectCode.trim().toUpperCase(),
       section: targetSection,
       isCurrent: true,
-    });
+    };
+    if (academicYear) mappingQuery.academicYear = academicYear;
+    if (semester) mappingQuery.semester = semester;
+
+    let mapping = await FacultyMapping.findOne(mappingQuery);
+    if (!mapping) {
+      mapping = await FacultyMapping.findOne({
+        subjectCode: subjectCode.trim().toUpperCase(),
+        section: targetSection,
+        isCurrent: true,
+      });
+    }
 
     if (!mapping && subjectName) {
       mapping = await FacultyMapping.findOne({
@@ -526,6 +564,15 @@ exports.createExam = async (req, res) => {
         section: targetSection,
         isCurrent: true,
       });
+    }
+
+    if (req.user && req.user.role === 'faculty') {
+      if (!mapping || !isFacultyMappingOwner(req.user, mapping)) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied. You can only schedule examinations for your own assigned subjects and sections.',
+        });
+      }
     }
 
     let enrolledStudents = [];
@@ -659,6 +706,7 @@ exports.createExam = async (req, res) => {
       startDateTime,
       endDateTime,
       publicationTime,
+      publicationTimeStr,
       session: examSession,
       classroomId,
       timetableId: timetableId || undefined,
@@ -684,7 +732,8 @@ exports.createExam = async (req, res) => {
         a6: en.a6 || '',
       })),
       createdBy: req.user._id,
-      facultyId: req.user?._id || mapping?.facultyId,
+      createdByRole: req.user?.role || 'faculty',
+      facultyId: (mapping && mapping.facultyId) || req.user?._id,
       isDeleted: false,
       isActive: true,
     });
@@ -1181,6 +1230,13 @@ exports.updateExam = async (req, res) => {
       exam.examName = String(examName).trim();
     }
     if (examType !== undefined) {
+      if (!isValidUnitExamType(examType)) {
+        return res.status(400).json({
+          success: false,
+          code: 'INVALID_EXAM_TYPE',
+          message: 'Examination Type must be one of: UNIT 1, UNIT 2, UNIT 3, UNIT 4, or UNIT 5.',
+        });
+      }
       exam.examType = normalizeExamType(examType, exam.examName);
     }
     if (academicYear !== undefined) exam.academicYear = academicYear;
@@ -1226,7 +1282,35 @@ exports.updateExam = async (req, res) => {
     exam.allowOvernight = range.isOvernight;
     exam.startDateTime = nextStartDT;
     exam.endDateTime = nextEndDT;
-    exam.publicationTime = getPublicationTime(nextStartDT);
+    if (req.body.publicationTime !== undefined) {
+      try {
+        const pubRes = resolveCustomPublicationDateTime({
+          examDate: nextDate,
+          startDateTime: nextStartDT,
+          publicationTime: req.body.publicationTime,
+          now: getEffectiveNow(req),
+          allowPastPublication:
+            req.user?.role === 'admin' && Boolean(req.body.confirmPastPublication || req.body.allowPastPublication),
+        });
+        exam.publicationTime = pubRes.publicationTime;
+        exam.publicationTimeStr = pubRes.publicationTimeStr;
+      } catch (pubErr) {
+        return res.status(pubErr.statusCode || 400).json({
+          success: false,
+          code: pubErr.code || 'INVALID_PUBLICATION_TIME',
+          message: pubErr.message,
+        });
+      }
+    } else if (!exam.publicationTime) {
+      exam.publicationTime = getPublicationTime(nextStartDT);
+      exam.publicationTimeStr = formatTime12h(exam.publicationTime);
+    } else if (exam.publicationTime >= nextStartDT) {
+      return res.status(400).json({
+        success: false,
+        code: 'PUBLICATION_AFTER_START',
+        message: 'Student Portal Publication Time must be strictly earlier than the updated Examination Start Time.',
+      });
+    }
     exam.subjectName = nextSubName;
     exam.subjectCode = nextSubCode;
 
@@ -1995,7 +2079,7 @@ exports.publishExam = async (req, res) => {
         success: false,
         code: 'FORBIDDEN_PUBLISH',
         requestId: req.requestId,
-        message: 'Only an administrator can publish examinations. Exam Incharge and Faculty cannot publish.',
+        message: 'Only an administrator can publish examinations. Faculty cannot publish.',
       });
     }
 
@@ -2276,7 +2360,7 @@ exports.publishExam = async (req, res) => {
       requestId: req.requestId,
       message: isImmediatePublish
         ? 'Examination published immediately to Student Portal.'
-        : `Approved examination published to release schedule. Student seating will become visible at ${publicationTime.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })} (exactly 20 minutes before examination start).`,
+        : `Approved examination published to release schedule. Student seating will become visible at ${publicationTime.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true }).toUpperCase()}.`,
       data: exam,
       allocation,
     });
@@ -2801,7 +2885,7 @@ exports.checkClassroomAvailability = async (req, res) => {
 
 // @desc    Create Centralized / Multi-Section Examination with Section-Wise Seating & Attendance Generation
 // @route   POST /api/exams/create-centralized
-// @access  Private (Admin, Exam Incharge, Faculty scoped to own mappings)
+// @access  Private (Admin, Faculty scoped to own mappings)
 exports.createCentralizedExam = async (req, res) => {
   try {
     const {
@@ -2824,11 +2908,19 @@ exports.createCentralizedExam = async (req, res) => {
       saveAsDraft,
     } = req.body;
 
-    // 1. Mandatory Fields Validation
+    // 1. Mandatory Fields & Strict Unit Exam Type Validation
     if (!examName || !subjectName || !subjectCode || !examDate) {
       return res.status(400).json({
         success: false,
         message: 'Please provide Examination Title, Subject Name, Subject Code, and Exam Date.',
+      });
+    }
+
+    if (!isValidUnitExamType(examType)) {
+      return res.status(400).json({
+        success: false,
+        code: 'INVALID_EXAM_TYPE',
+        message: 'Examination Type is mandatory and must be one of: UNIT 1, UNIT 2, UNIT 3, UNIT 4, or UNIT 5.',
       });
     }
 
@@ -2858,7 +2950,25 @@ exports.createCentralizedExam = async (req, res) => {
     const startDateTime = range.startDateTime;
     const endDateTime = range.endDateTime;
 
-    const publicationTime = getPublicationTime(startDateTime);
+    let pubResolved;
+    try {
+      pubResolved = resolveCustomPublicationDateTime({
+        examDate: normDate,
+        startDateTime,
+        publicationTime: req.body.publicationTime,
+        now: getEffectiveNow(req),
+        allowPastPublication:
+          req.user?.role === 'admin' && Boolean(req.body.confirmPastPublication || req.body.allowPastPublication),
+      });
+    } catch (pubErr) {
+      return res.status(pubErr.statusCode || 400).json({
+        success: false,
+        code: pubErr.code || 'INVALID_PUBLICATION_TIME',
+        message: pubErr.message,
+      });
+    }
+    const publicationTime = pubResolved.publicationTime;
+    const publicationTimeStr = pubResolved.publicationTimeStr;
     const normCode = subjectCode.trim().toUpperCase();
     const examYear = year || 'III Year';
     const examSemester = semester || 'I Semester';
@@ -2957,6 +3067,12 @@ exports.createCentralizedExam = async (req, res) => {
     if (Array.isArray(selectedSections) && selectedSections.length > 0) {
       andConditions.push({ section: { $in: selectedSections.map((s) => String(s).trim().toUpperCase()) } });
     }
+    if (academicYear) {
+      andConditions.push({ academicYear });
+    }
+    if (semester) {
+      andConditions.push({ semester });
+    }
 
     const candidateMappings = await FacultyMapping.find({ $and: andConditions }).sort({ section: 1, group: 1 });
 
@@ -3044,6 +3160,7 @@ exports.createCentralizedExam = async (req, res) => {
       startDateTime,
       endDateTime,
       publicationTime,
+      publicationTimeStr,
       session: examSession,
       isParentExam: true,
       classroomId: sectionAllocations[0]?.classroomId, // Primary room reference
@@ -3055,7 +3172,7 @@ exports.createCentralizedExam = async (req, res) => {
       allocationStatus: 'GENERATED',
       status: isDraft ? 'DRAFT' : 'SCHEDULED',
       createdBy: req.user._id,
-      createdByRole: req.user.role || 'exam_incharge',
+      createdByRole: req.user?.role || 'faculty',
       isDeleted: false,
       isActive: true,
     });

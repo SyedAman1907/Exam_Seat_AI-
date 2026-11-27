@@ -13,10 +13,16 @@ function normalizePersonName(name) {
 
 function isFacultyMappingOwner(user, mapping) {
   if (!user || !mapping) return false;
-  if (user.role === 'admin' || user.role === 'exam_incharge' || user.role === 'incharge') {
+  if (user.role === 'admin') {
     return true;
   }
+  if (user.role !== 'faculty') {
+    return false;
+  }
   if (mapping.facultyId && user._id && mapping.facultyId.toString() === user._id.toString()) {
+    return true;
+  }
+  if (user.facultyId && mapping.facultyIdCode && String(user.facultyId).toUpperCase().trim() === String(mapping.facultyIdCode).toUpperCase().trim()) {
     return true;
   }
   const userNorm = normalizePersonName(user.name);
@@ -51,10 +57,7 @@ function canFacultyViewExam(user, exam) {
 function canUserManageExam(user, exam) {
   if (!user || !exam) return false;
   if (user.role === 'admin') return true;
-  if (isExamCreator(user, exam)) return true;
-  if (user.role === 'exam_incharge' || user.role === 'incharge') {
-    return exam.createdByRole === 'exam_incharge' || exam.createdByRole === 'incharge';
-  }
+  if (user.role === 'faculty' && isExamCreator(user, exam)) return true;
   return false;
 }
 

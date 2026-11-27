@@ -15,6 +15,7 @@ const {
   parseExamDateRange,
   formatTime12h,
   formatExamTimeRange,
+  formatSessionLabel,
   getStudentAccessTime,
   getSeatingWindowCloseTime,
   hasSeatingWindowClosed,
@@ -92,8 +93,14 @@ function resolveExamWindow(ex, effectiveNow) {
     };
   }
 
-  const studentAccessTime = getStudentAccessTime(startDateTime);
-  const accessTimeFormatted = formatTime12h(studentAccessTime);
+  const storedPub = ex.publicationTime ? new Date(ex.publicationTime) : null;
+  const studentAccessTime =
+    storedPub && !isNaN(storedPub.getTime())
+      ? storedPub
+      : getStudentAccessTime(startDateTime);
+  const accessTimeFormatted = ex.publicationTimeStr
+    ? formatTime12h(ex.publicationTimeStr)
+    : formatTime12h(studentAccessTime);
   const accessDate = formatIsoDateKolkata(studentAccessTime);
   const windowCloseTime = getSeatingWindowCloseTime(startDateTime, endDateTime);
 
@@ -131,6 +138,18 @@ exports.getActiveExams = async (req, res) => {
       });
     }
 
+    // Enforce strict student-level ownership when authenticated as a Student
+    if (req.user?.role === 'student') {
+      const authReg = String(req.user.registrationNumber || '').trim().toUpperCase();
+      if (!authReg || authReg !== regNo) {
+        return res.status(403).json({
+          success: false,
+          code: 'FORBIDDEN_STUDENT_SCOPE',
+          message: 'Access denied. You can only view your own seating arrangement.',
+        });
+      }
+    }
+
     const effectiveNow = getEffectiveNow(req);
     const bypassCache = Boolean(req.headers['x-test-timestamp'] || req.query.date);
 
@@ -156,7 +175,7 @@ exports.getActiveExams = async (req, res) => {
           examDate: { $in: [iso, dmy, tomorrowIso, tomorrowDmy] },
         })
           .select(
-            'examName examType subjectName subjectCode examDate startTime endTime startDateTime endDateTime allowOvernight session department section sections group academicYear studentCount approvalStatus visibilityStatus status'
+            'examName examType subjectName subjectCode examDate startTime endTime startDateTime endDateTime publicationTime publicationTimeStr allowOvernight session department section sections group academicYear studentCount approvalStatus visibilityStatus status'
           )
           .sort({ startDateTime: 1, startTime: 1, session: 1, section: 1 })
           .lean(),
@@ -204,12 +223,12 @@ exports.getActiveExams = async (req, res) => {
 
       let windowState = 'PENDING';
       let notice = accessTimeFormatted
-        ? `Your examination seating information will become available at ${accessTimeFormatted} IST, 20 minutes before your examination starts.`
-        : 'Examination schedule is unavailable. Please contact the Exam Cell.';
+        ? `Your seating arrangement will be available at ${accessTimeFormatted}.`
+        : 'Examination schedule is unavailable. Please contact the Administrator.';
 
       if (isInvalidSchedule) {
         windowState = 'INVALID';
-        notice = 'Examination schedule is missing or invalid. Please contact the Exam Cell.';
+        notice = 'Examination schedule is missing or invalid. Please contact the Administrator.';
       } else if (isCompleted) {
         windowState = 'COMPLETED';
         notice = 'Examination has concluded.';
@@ -222,7 +241,7 @@ exports.getActiveExams = async (req, res) => {
         allWindowsClosed = false;
       } else {
         windowState = 'OPEN';
-        notice = `Seating access is open (available from ${accessTimeFormatted} IST until 10 minutes after examination start).`;
+        notice = `Seating arrangement is open (published at ${accessTimeFormatted} IST).`;
         hasOpenWindow = true;
         allWindowsClosed = false;
       }
@@ -339,6 +358,18 @@ exports.lookupSeat = async (req, res) => {
       });
     }
 
+    // Enforce strict student-level ownership when authenticated as a Student
+    if (req.user?.role === 'student') {
+      const authReg = String(req.user.registrationNumber || '').trim().toUpperCase();
+      if (!authReg || authReg !== regNo) {
+        return res.status(403).json({
+          success: false,
+          code: 'FORBIDDEN_STUDENT_SCOPE',
+          message: 'Access denied. You can only view your own seating arrangement.',
+        });
+      }
+    }
+
     const effectiveNow = getEffectiveNow(req);
     const hasTestClock = Boolean(req.headers['x-test-timestamp']);
     const bypassCache = hasTestClock || Boolean(date);
@@ -364,7 +395,7 @@ exports.lookupSeat = async (req, res) => {
     }
 
     const baseExamFields =
-      'examName examType subjectName subjectCode examDate startTime endTime startDateTime endDateTime allowOvernight session department section group academicYear facultyName status approvalStatus visibilityStatus sectionAllocations.section sectionAllocations.group sectionAllocations.roomNumber sectionAllocations.classroomName sectionAllocations.facultyName';
+      'examName examType subjectName subjectCode examDate startTime endTime startDateTime endDateTime publicationTime publicationTimeStr allowOvernight session department section group academicYear facultyName status approvalStatus visibilityStatus sectionAllocations.section sectionAllocations.group sectionAllocations.roomNumber sectionAllocations.classroomName sectionAllocations.facultyName';
 
     const cacheKey = examId ? `lookup:${iso}:${examId}` : `lookup:${iso}:all`;
     const candidateExams = await portalCache.getScheduleCandidates(
@@ -521,14 +552,15 @@ exports.lookupSeat = async (req, res) => {
       });
     }
 
-    // RULE 2: Before 20-Minute Early Access Timestamp (studentAccessTime = startDateTime - 20m) -> Strictly Locked
+    // RULE 2: Before configured Student Portal Publication Time -> Strictly Locked
     if (isPending) {
       return res.status(403).json({
         success: false,
         isPending: true,
         serverNow: effectiveNow.toISOString(),
-        message: `Your examination seating information will become available at ${accessTimeFormatted} IST, 20 minutes before your examination starts.`,
+        message: `Your seating arrangement will be available at ${accessTimeFormatted}.`,
         studentAccessTime: studentAccessTime.toISOString(),
+        publicationTimeStr: accessTimeFormatted,
         accessTimeFormatted,
         accessDate,
         startTime: formatTime12h(targetExam.startTime || startDateTime),
@@ -651,6 +683,7 @@ exports.lookupSeat = async (req, res) => {
         seatNumber: studentMatch.seatNumber || 1,
         seatId: studentMatch.seatId || `R${studentMatch.rowNumber || 1}-B${studentMatch.benchNumber || 1}-S${studentMatch.seatNumber || 1}`,
         studentAccessTime: studentAccessTime.toISOString(),
+        publicationTimeStr: accessTimeFormatted,
         accessTimeFormatted,
         windowCloseTime: windowCloseTime ? windowCloseTime.toISOString() : null,
         serverNow: effectiveNow.toISOString(),
@@ -669,6 +702,188 @@ exports.lookupSeat = async (req, res) => {
       success: false,
       code: 'SERVER_ERROR',
       message: 'Unable to complete seating lookup right now. Please try again.',
+    });
+  }
+};
+
+// @desc    Get authenticated student's own examination list and (once published) own seat details only
+// @route   GET /api/student/my-exams
+// @access  Private (Student Only)
+exports.getStudentExams = async (req, res) => {
+  try {
+    if (!req.user || req.user.role !== 'student' || !req.user.registrationNumber) {
+      return res.status(403).json({
+        success: false,
+        code: 'FORBIDDEN',
+        message: 'Student authentication required.',
+      });
+    }
+
+    const regNo = String(req.user.registrationNumber).trim().toUpperCase();
+    const effectiveNow = getEffectiveNow(req);
+    if (req.headers['x-test-timestamp']) {
+      await publicationScheduler.completeOverdueExams(effectiveNow);
+    }
+
+    // Find approved examinations where this student is allocated or enrolled (never exposing other students)
+    const [allocDocs, enrollmentDocs, directExamIds] = await Promise.all([
+      Allocation.find({
+        isCurrent: true,
+        status: { $ne: 'DRAFT' },
+        'students.registrationNumber': regNo,
+      })
+        .select('examId students.$')
+        .lean(),
+      StudentEnrollment.find({ rollNumber: regNo }).select('subjectCode subjectName section').lean(),
+      Exam.find({
+        isDeleted: { $ne: true },
+        approvalStatus: 'APPROVED',
+        status: { $nin: ['CANCELLED', 'FAILED', 'DRAFT'] },
+        'sectionAllocations.rosterSnapshot.registrationNumber': regNo,
+      })
+        .select('_id')
+        .lean(),
+    ]);
+
+    const seatByExamId = new Map();
+    const matchedExamIds = new Set(directExamIds.map((d) => String(d._id)));
+    for (const ad of allocDocs) {
+      if (ad.examId && ad.students?.[0]) {
+        matchedExamIds.add(String(ad.examId));
+        seatByExamId.set(String(ad.examId), ad.students[0]);
+      }
+    }
+
+    const enrolledSubjectCodes = Array.from(
+      new Set(enrollmentDocs.map((e) => String(e.subjectCode || '').trim().toUpperCase()).filter(Boolean))
+    );
+
+    const examQuery = {
+      isDeleted: { $ne: true },
+      approvalStatus: 'APPROVED',
+      status: { $nin: ['CANCELLED', 'FAILED', 'DRAFT'] },
+      $or: [
+        ...(matchedExamIds.size > 0 ? [{ _id: { $in: Array.from(matchedExamIds) } }] : []),
+        ...(enrolledSubjectCodes.length > 0 ? [{ subjectCode: { $in: enrolledSubjectCodes } }] : []),
+      ],
+    };
+
+    if (examQuery.$or.length === 0) {
+      return res.status(200).json({
+        success: true,
+        serverNow: effectiveNow.toISOString(),
+        student: req.user,
+        count: 0,
+        data: [],
+      });
+    }
+
+    const exams = await Exam.find(examQuery)
+      .select(
+        'examName examType subjectName subjectCode academicYear semester section group facultyName examDate startTime endTime startDateTime endDateTime publicationTime publicationTimeStr allowOvernight session approvalStatus visibilityStatus status sectionAllocations.section sectionAllocations.group sectionAllocations.roomNumber sectionAllocations.classroomName sectionAllocations.facultyName'
+      )
+      .sort({ startDateTime: 1, examDate: 1 })
+      .lean();
+
+    const resultRows = exams.map((ex) => {
+      const win = resolveExamWindow(ex, effectiveNow);
+      let publicationStatusLabel = 'Scheduled';
+      let notice = win.accessTimeFormatted
+        ? `Your seating arrangement will be available at ${win.accessTimeFormatted}.`
+        : 'Publication time pending configuration.';
+
+      if (win.isCompleted || ex.status === 'COMPLETED') {
+        publicationStatusLabel = 'Completed';
+        notice = 'Examination concluded.';
+      } else if (win.isClosed) {
+        publicationStatusLabel = 'Window Closed';
+        notice = 'Seating visibility window closed 10 minutes after examination start.';
+      } else if (win.isOpen) {
+        publicationStatusLabel = 'Published';
+        notice = `Seating published at ${win.accessTimeFormatted} IST.`;
+      }
+
+      // Strictly only attach this student's OWN seat details when publication window is OPEN
+      let ownSeat = null;
+      if (win.isOpen) {
+        const matched = seatByExamId.get(String(ex._id));
+        if (matched) {
+          const secAlloc = (ex.sectionAllocations || []).find((sa) => sa.section === matched.section);
+          const roomNum = secAlloc?.roomNumber || matched.roomNumber || classroomMappingService.getRoomNumberForSection(matched.section) || '3010';
+          const clsName = secAlloc?.classroomName || matched.classroomName || `ET BLOCK ${roomNum}`;
+          ownSeat = {
+            registrationNumber: matched.registrationNumber,
+            studentName: matched.name,
+            section: matched.section || ex.section,
+            group: matched.group || secAlloc?.group || ex.group,
+            classroomName: clsName,
+            classroomHall: clsName,
+            roomNumber: roomNum,
+            block: 'ET BLOCK',
+            floor: '3rd Floor',
+            row: `Row ${matched.rowNumber || 1}`,
+            rowNumber: matched.rowNumber || 1,
+            bench: `Bench ${matched.benchNumber || 1}`,
+            benchNumber: matched.benchNumber || 1,
+            chairNumber: matched.seatNumber || 1,
+            seatNumber: matched.seatNumber || 1,
+            seatId: matched.seatId,
+            questionPaperSet: matched.questionPaperSet || 'A',
+            instructions: 'Bring your valid Student ID Card and report at least 15 minutes before exam start.',
+          };
+        }
+      }
+
+      return {
+        _id: ex._id,
+        examName: ex.examName,
+        examType: resolveExamType(ex),
+        subjectName: ex.subjectName,
+        subjectCode: ex.subjectCode,
+        academicYear: ex.academicYear,
+        semester: ex.semester,
+        examDate: ex.examDate,
+        session: formatSessionLabel(ex.session, ex.startTime),
+        startTime: formatTime12h(ex.startTime || win.startDateTime),
+        endTime: formatTime12h(ex.endTime || win.endDateTime),
+        formattedTimeRange: formatExamTimeRange(ex),
+        publicationTimeStr: win.accessTimeFormatted,
+        publicationTime: win.studentAccessTime ? win.studentAccessTime.toISOString() : null,
+        studentAccessTime: win.studentAccessTime ? win.studentAccessTime.toISOString() : null,
+        windowCloseTime: win.windowCloseTime ? win.windowCloseTime.toISOString() : null,
+        windowState: win.isCompleted ? 'COMPLETED' : win.isClosed ? 'CLOSED' : win.isPending ? 'PENDING' : 'OPEN',
+        publicationStatusLabel,
+        notice,
+        seat: ownSeat,
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      serverNow: effectiveNow.toISOString(),
+      student: {
+        registrationNumber: req.user.registrationNumber,
+        name: req.user.name,
+        department: req.user.department,
+        section: req.user.section,
+        group: req.user.group,
+      },
+      count: resultRows.length,
+      data: resultRows,
+    });
+  } catch (error) {
+    if (isDbConnectivityError(error) || mongoose.connection.readyState !== 1) {
+      return res.status(503).json({
+        success: false,
+        code: 'DATABASE_UNAVAILABLE',
+        message: 'Database service is temporarily unavailable.',
+      });
+    }
+    console.error('[StudentPortal getStudentExams Error]', error.message);
+    return res.status(500).json({
+      success: false,
+      code: 'SERVER_ERROR',
+      message: 'Failed to retrieve your examination schedule.',
     });
   }
 };

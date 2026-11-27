@@ -30,6 +30,13 @@ const facultyMappingSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
   },
+  facultyIdCode: {
+    type: String,
+    trim: true,
+    uppercase: true,
+    default: '',
+    index: true,
+  },
   facultyName: {
     type: String,
     required: [true, 'Faculty name is required'],
@@ -127,6 +134,7 @@ facultyMappingSchema.pre('save', function (next) {
 });
 
 facultyMappingSchema.index({ facultyName: 1, subjectCode: 1, section: 1, isCurrent: 1 });
+facultyMappingSchema.index({ subjectCode: 1, section: 1, academicYear: 1, semester: 1, isCurrent: 1 });
 facultyMappingSchema.index({ subjectCode: 1, section: 1, isCurrent: 1 });
 facultyMappingSchema.index({ academicYear: 1, semester: 1, isCurrent: 1 });
 facultyMappingSchema.index({ facultyId: 1, isCurrent: 1 });

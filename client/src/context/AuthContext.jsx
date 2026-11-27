@@ -53,14 +53,14 @@ export const AuthProvider = ({ children }) => {
           timeout: 5000,
           signal,
         });
-      if (res.data?.success && res.data?.user && typeof res.data.user === 'object') {
-        setUser(res.data.user);
-        setToken(storedToken);
-        localStorage.setItem('examseat_user', JSON.stringify(res.data.user));
-        setAuthStatus('authenticated');
-      } else {
-        clearSession();
-      }
+        if (res.data?.success && res.data?.user && typeof res.data.user === 'object') {
+          setUser(res.data.user);
+          setToken(storedToken);
+          localStorage.setItem('examseat_user', JSON.stringify(res.data.user));
+          setAuthStatus('authenticated');
+        } else {
+          clearSession();
+        }
       } catch (err) {
         if (err.name === 'CanceledError' || err.code === 'ERR_CANCELED') {
           return;
@@ -105,9 +105,28 @@ export const AuthProvider = ({ children }) => {
       setAuthStatus('authenticated');
       localStorage.setItem('examseat_token', newToken);
       localStorage.setItem('examseat_user', JSON.stringify(newUser));
-      return { success: true };
+      return { success: true, user: newUser };
     }
     return { success: false, message: res.data?.message || 'Sign in failed.' };
+  };
+
+  const studentLogin = async (registrationNumber, password) => {
+    const payload = { registrationNumber: String(registrationNumber || '').trim().toUpperCase() };
+    if (password && String(password).trim()) {
+      payload.password = String(password).trim();
+    }
+    const res = await api.post('/auth/student-login', payload);
+    if (res.data?.success && res.data?.token && res.data?.user && typeof res.data.user === 'object') {
+      const { token: newToken, user: newUser } = res.data;
+      setToken(newToken);
+      setUser(newUser);
+      setAuthError('');
+      setAuthStatus('authenticated');
+      localStorage.setItem('examseat_token', newToken);
+      localStorage.setItem('examseat_user', JSON.stringify(newUser));
+      return { success: true, user: newUser };
+    }
+    return { success: false, message: res.data?.message || 'Student sign in failed.' };
   };
 
   const logout = async () => {
@@ -134,6 +153,7 @@ export const AuthProvider = ({ children }) => {
         retryAuth,
         clearSession,
         login,
+        studentLogin,
         logout,
       }}
     >

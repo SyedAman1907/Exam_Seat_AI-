@@ -9,6 +9,8 @@ const AdminLogin = lazy(() => import('./pages/admin/AdminLogin'));
 const StudentSeatFinder = lazy(() => import('./pages/student/StudentSeatFinder'));
 const Dashboard = lazy(() => import('./pages/admin/Dashboard'));
 const FacultyAssignments = lazy(() => import('./pages/admin/FacultyAssignments'));
+const FacultyManagement = lazy(() => import('./pages/admin/FacultyManagement'));
+const SubjectManagement = lazy(() => import('./pages/admin/SubjectManagement'));
 const Examinations = lazy(() => import('./pages/admin/Examinations'));
 const Timetable = lazy(() => import('./pages/admin/Timetable'));
 const Students = lazy(() => import('./pages/admin/Students'));
@@ -25,8 +27,8 @@ const RouteLoader = () => (
 );
 
 // Protected Route Guard
-const ProtectedRoute = ({ children }) => {
-  const { isAuthenticated, authStatus, authError, retryAuth, clearSession } = useAuth();
+const ProtectedRoute = ({ children, allowedRoles = ['admin', 'faculty'] }) => {
+  const { user, isAuthenticated, authStatus, authError, retryAuth, clearSession } = useAuth();
   const location = useLocation();
 
   if (authStatus === 'initializing') {
@@ -78,6 +80,17 @@ const ProtectedRoute = ({ children }) => {
     return <Navigate to="/admin/login" state={{ from: location }} replace />;
   }
 
+  const userRole = String(user?.role || '').toLowerCase();
+  if (Array.isArray(allowedRoles) && allowedRoles.length > 0 && !allowedRoles.includes(userRole)) {
+    if (userRole === 'faculty') {
+      return <Navigate to="/faculty/portal" replace />;
+    }
+    if (userRole === 'student') {
+      return <Navigate to="/student/seat-finder" replace />;
+    }
+    return <Navigate to="/admin/login" replace />;
+  }
+
   return children;
 };
 
@@ -87,23 +100,26 @@ function AppRoutes() {
     <ErrorBoundary resetKey={`${location.pathname}${location.search}`} title="Application View Error">
       <Suspense fallback={<RouteLoader />}>
         <Routes>
-      {/* Public Student Portal */}
+      {/* Student Portal & Registration Sign-In */}
+      <Route path="/student/login" element={<StudentSeatFinder />} />
       <Route path="/student/seat-finder" element={<StudentSeatFinder />} />
 
-      {/* Admin Login */}
+      {/* Admin & Faculty Login */}
       <Route path="/admin/login" element={<AdminLogin />} />
 
-      {/* Protected Admin Routes */}
+      {/* Protected Admin Routes (ADMIN ONLY) */}
       <Route
         path="/admin"
         element={
-          <ProtectedRoute>
+          <ProtectedRoute allowedRoles={['admin']}>
             <AdminLayout />
           </ProtectedRoute>
         }
       >
         <Route index element={<Navigate to="/admin/dashboard" replace />} />
         <Route path="dashboard" element={<Dashboard />} />
+        <Route path="faculty" element={<FacultyManagement />} />
+        <Route path="subjects" element={<SubjectManagement />} />
         <Route path="assignments" element={<FacultyAssignments />} />
         <Route path="exams" element={<Examinations />} />
         <Route path="timetable" element={<Timetable />} />
@@ -114,16 +130,16 @@ function AppRoutes() {
         <Route path="settings" element={<Settings />} />
       </Route>
 
-      {/* Protected Faculty Routes */}
+      {/* Protected Faculty Routes (FACULTY & ADMIN) */}
       <Route
         path="/faculty"
         element={
-          <ProtectedRoute>
+          <ProtectedRoute allowedRoles={['admin', 'faculty']}>
             <AdminLayout />
           </ProtectedRoute>
         }
       >
-        <Route index element={<FacultyPortal />} />
+        <Route index element={<Navigate to="/faculty/portal" replace />} />
         <Route path="portal" element={<FacultyPortal />} />
       </Route>
 

@@ -149,6 +149,24 @@ async function ensureExamIndexes() {
       );
       console.log('[Database Migration] Created availability index "exam_sec_room_interval_idx".');
     }
+
+    // 4. Drop legacy single-field subjectCode unique index on subjects so different academic years/semesters can share codes
+    try {
+      const subjectsCol = db.collection('subjects');
+      const subIndexes = await subjectsCol.indexes();
+      const oldSubUnique = subIndexes.find((idx) => idx.name === 'subjectCode_1' && idx.unique);
+      if (oldSubUnique) {
+        await subjectsCol.dropIndex('subjectCode_1');
+        console.log('[Database Migration] Dropped legacy single-field unique index "subjectCode_1" on subjects.');
+      }
+      const hasCompoundSubIdx = subIndexes.some((idx) => idx.name === 'subject_code_acad_sem_idx');
+      if (!hasCompoundSubIdx) {
+        await subjectsCol.createIndex(
+          { subjectCode: 1, academicYear: 1, semester: 1 },
+          { unique: true, name: 'subject_code_acad_sem_idx', background: true }
+        );
+      }
+    } catch {}
   } catch (err) {
     console.error('[Database Migration Error in ensureExamIndexes]:', err.message);
   }

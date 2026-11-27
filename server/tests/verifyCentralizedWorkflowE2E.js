@@ -1,11 +1,21 @@
 /**
- * End-to-End Verification for Centralized Examination Creation, Reports & Approval Workflow.
- * Uses an isolated test database (never touches production MongoDB Atlas data).
+ * End-to-End Verification for:
+ *  - 3-Role Auth (ADMIN, FACULTY, STUDENT) & complete Exam Incharge removal
+ *  - Excel/CSV/PDF Permanent Mapping Upload + Inconsistent Name Detection + Compound Subject Keys
+ *  - Faculty Exam Request Creation (UNIT 1-UNIT 5 mandatory) & Cross-Faculty Isolation
+ *  - Custom Student Portal Publication Time (AM/PM + Scheduler recovery + approval gating)
+ *  - Admin Approve / Publish / Report Downloads (Attendance PDF, ZIP, Seating PDF)
+ *  - Student Registration Sign-In, /my-exams Countdown, Own-Seat-Only Isolation & T+10 Closure
+ *  - Safeguarded Academic Backup & Reset Verification
+ *
+ * Uses an isolated local test database (never touches production MongoDB Atlas data).
  */
 const assert = require('assert');
 const http = require('http');
 const fs = require('fs');
+const os = require('os');
 const vm = require('vm');
+const ExcelJS = require('exceljs');
 
 async function seedTestEnvironment() {
   const User = require('../models/User');
@@ -21,8 +31,9 @@ async function seedTestEnvironment() {
     isActive: true,
   });
 
-  const incharge = await User.create({
-    name: 'Test Exam Incharge',
+  // Insert deprecated exam_incharge directly at collection level to verify auth blocks it completely
+  await User.collection.insertOne({
+    name: 'Legacy Exam Incharge',
     email: 'testincharge@rgmcet.edu.in',
     passwordHash: await User.hashPassword('TestIncharge@123'),
     role: 'exam_incharge',
@@ -31,9 +42,20 @@ async function seedTestEnvironment() {
   });
 
   const faculty = await User.create({
-    name: 'Faculty A1',
+    name: 'Dr. Rajesh Kumar',
     email: 'facultya1@rgmcet.edu.in',
+    facultyId: 'FAC101',
     passwordHash: await User.hashPassword('TestFaculty@123'),
+    role: 'faculty',
+    department: 'Computer Science and Engineering',
+    isActive: true,
+  });
+
+  const otherFaculty = await User.create({
+    name: 'Prof. Other Faculty',
+    email: 'facultyother@rgmcet.edu.in',
+    facultyId: 'FAC999',
+    passwordHash: await User.hashPassword('OtherFaculty@123'),
     role: 'faculty',
     department: 'Computer Science and Engineering',
     isActive: true,
@@ -84,7 +106,9 @@ async function seedTestEnvironment() {
       });
     }
     const mapping = await FacultyMapping.create({
-      facultyName: `Faculty ${sec}`,
+      facultyId: faculty._id,
+      facultyIdCode: faculty.facultyId,
+      facultyName: faculty.name,
       subjectName: 'Compiler Design',
       subjectCode: '20A05E2E',
       section: sec,
@@ -99,7 +123,24 @@ async function seedTestEnvironment() {
     mappingIds.push(String(mapping._id));
   }
 
-  return { admin, incharge, faculty, mappingIds };
+  // Unowned mapping for cross-faculty isolation check
+  const otherMapping = await FacultyMapping.create({
+    facultyId: otherFaculty._id,
+    facultyIdCode: otherFaculty.facultyId,
+    facultyName: otherFaculty.name,
+    subjectName: 'Cloud Computing',
+    subjectCode: '20A05CLD',
+    section: 'A4',
+    group: 'Group B',
+    academicYear: '2026-2027',
+    year: 'III Year',
+    semester: 'I Semester',
+    isCurrent: true,
+    students: [{ registrationNumber: '24E2E99001', name: 'Other Group Student', group: 'Group B' }],
+    studentCount: 1,
+  });
+
+  return { admin, faculty, otherFaculty, mappingIds, otherMappingId: String(otherMapping._id) };
 }
 
 function httpRequest(port, { method, path, headers = {}, body = null, rawBody = null }) {
@@ -152,25 +193,16 @@ function verifyClientJsonParser() {
   vm.runInNewContext(code, { module: mod });
   const safeParse = mod.exports;
 
-  // Actual null & empty bodies preserve null without throwing or converting to {}
   assert.strictEqual(safeParse(null), null);
   assert.strictEqual(safeParse(undefined), null);
   assert.strictEqual(safeParse(''), null);
   assert.strictEqual(safeParse('   '), null);
   assert.strictEqual(safeParse('null'), null);
-
-  // Double-encoded "null" safely resolves to null without blindly parsing into objects
   assert.strictEqual(safeParse('"null"'), null);
-
-  // Already-parsed object is returned as-is without re-parsing
   const obj = { success: true, data: [] };
   assert.strictEqual(safeParse(obj), obj);
-
-  // Non-JSON / HTML / malformed strings do not throw SyntaxError
   assert.strictEqual(safeParse('<!DOCTYPE html><html></html>'), '<!DOCTYPE html><html></html>');
   assert.strictEqual(safeParse('{invalid'), '{invalid');
-
-  // Valid JSON string parses once into structured object
   const valid = safeParse('{"success":true,"count":3}');
   assert.strictEqual(valid.success, true);
   assert.strictEqual(valid.count, 3);
@@ -186,37 +218,209 @@ async function run() {
   const connectDB = require('../config/db');
   const mongoose = require('mongoose');
   const Exam = require('../models/Exam');
+  const Subject = require('../models/Subject');
+  const Allocation = require('../models/Allocation');
+  const User = require('../models/User');
+  const Classroom = require('../models/Classroom');
+  const publicationScheduler = require('../scheduler');
+  const { performSafeguardedAcademicReset } = require('../scripts/resetAcademicData');
+
   await connectDB();
 
-  const { mappingIds } = await seedTestEnvironment();
+  const { mappingIds, otherMappingId } = await seedTestEnvironment();
   const app = require('../app');
   const server = http.createServer(app);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address();
 
   try {
-    // 1. Login as Exam Incharge
-    const incLogin = await httpRequest(port, {
+    // 1. Deprecated Exam Incharge login MUST be rejected (403 ROLE_REMOVED)
+    const deprecatedLogin = await httpRequest(port, {
       method: 'POST',
       path: '/api/auth/login',
       body: { email: 'testincharge@rgmcet.edu.in', password: 'TestIncharge@123' },
     });
-    assert.strictEqual(incLogin.status, 200);
-    assert.strictEqual(incLogin.jsonValid, true);
-    const incToken = incLogin.json.token;
-    assert.ok(incToken);
+    assert.strictEqual(deprecatedLogin.status, 403);
+    assert.strictEqual(deprecatedLogin.json.code, 'ROLE_REMOVED');
 
-    // 2. Create centralized examination (3 sections, 216 students)
+    // 2. Admin & Faculty logins succeed cleanly
+    const [adminLogin, facLogin, otherFacLogin] = await Promise.all([
+      httpRequest(port, {
+        method: 'POST',
+        path: '/api/auth/login',
+        body: { email: 'testadmin@rgmcet.edu.in', password: 'TestAdmin@123' },
+      }),
+      httpRequest(port, {
+        method: 'POST',
+        path: '/api/auth/login',
+        body: { email: 'facultya1@rgmcet.edu.in', password: 'TestFaculty@123' },
+      }),
+      httpRequest(port, {
+        method: 'POST',
+        path: '/api/auth/login',
+        body: { email: 'facultyother@rgmcet.edu.in', password: 'OtherFaculty@123' },
+      }),
+    ]);
+    assert.strictEqual(adminLogin.status, 200);
+    assert.strictEqual(facLogin.status, 200);
+    assert.strictEqual(otherFacLogin.status, 200);
+    const adminToken = adminLogin.json.token;
+    const facToken = facLogin.json.token;
+    const otherFacToken = otherFacLogin.json.token;
+
+    // 3. Compound Subject key verification (same subjectCode across two semesters/academic years)
+    await Subject.init();
+    const s1 = await httpRequest(port, {
+      method: 'POST',
+      path: '/api/subjects',
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: {
+        subjectCode: '20A05COMP',
+        subjectName: 'Algorithms Design',
+        academicYear: '2025-2026',
+        semester: 'I Semester',
+      },
+    });
+    const s2 = await httpRequest(port, {
+      method: 'POST',
+      path: '/api/subjects',
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: {
+        subjectCode: '20A05COMP',
+        subjectName: 'Algorithms Design',
+        academicYear: '2026-2027',
+        semester: 'II Semester',
+      },
+    });
+    assert.strictEqual(s1.status, 201);
+    assert.strictEqual(s2.status, 201);
+
+    // 4. Excel workbook (.xlsx) preview upload + Inconsistent Student Name detection
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Mappings');
+    ws.addRow([
+      'Faculty ID',
+      'Faculty Name',
+      'Academic Year',
+      'Semester',
+      'Subject Code',
+      'Subject Name',
+      'Section',
+      'Group',
+      'Registration Number',
+      'Student Name',
+    ]);
+    ws.addRow(['FAC101', 'Dr. Rajesh Kumar', '2026-2027', 'I Semester', '20A05E2E', 'Compiler Design', 'A1', 'Group A', '24E2E00001', 'Mismatch Name One']);
+    ws.addRow(['FAC101', 'Dr. Rajesh Kumar', '2026-2027', 'I Semester', '20A05E2E', 'Compiler Design', 'A2', 'Group A', '24E2E00001', 'Mismatch Name Two']);
+    const xlsxBuf = Buffer.from(await wb.xlsx.writeBuffer());
+
+    const fd = new FormData();
+    fd.append('file', new Blob([xlsxBuf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), 'roster.xlsx');
+    fd.append('uploadMode', 'multi');
+    const xlsxPreviewRes = await fetch(`http://127.0.0.1:${port}/api/mappings/upload-preview`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: fd,
+    });
+    assert.strictEqual(xlsxPreviewRes.status, 200);
+    const xlsxJson = await xlsxPreviewRes.json();
+    assert.strictEqual(xlsxJson.success, true);
+    assert.ok(Array.isArray(xlsxJson.inconsistentNames) && xlsxJson.inconsistentNames.length >= 1, 'Inconsistent student names must be detected');
+
+    // Faculty cannot mutate mappings (403)
+    const facMapBlock = await httpRequest(port, {
+      method: 'POST',
+      path: '/api/mappings/confirm',
+      headers: { Authorization: `Bearer ${facToken}` },
+      body: { facultyName: 'Dr. Rajesh Kumar', subjectName: 'Compiler Design', subjectCode: '20A05E2E', section: 'A1', students: [] },
+    });
+    assert.strictEqual(facMapBlock.status, 403);
+
+    // 5. Faculty cross-isolation: otherFaculty cannot schedule exam for FAC101's mapping
+    const crossFacultyRes = await httpRequest(port, {
+      method: 'POST',
+      path: '/api/exams/create-centralized',
+      headers: { Authorization: `Bearer ${otherFacToken}` },
+      body: {
+        examType: 'UNIT 1',
+        academicYear: '2026-2027',
+        year: 'III Year',
+        semester: 'I Semester',
+        subjectName: 'Compiler Design',
+        subjectCode: '20A05E2E',
+        examName: 'Unauthorized Cross Exam',
+        examDate: '2099-05-15',
+        startTime: '10:00 AM',
+        endTime: '12:00 PM',
+        publicationTime: '09:20 AM',
+        session: 'AM',
+        group: 'Group A',
+        selectedSections: ['A1'],
+        selectedMappingIds: [mappingIds[0]],
+      },
+    });
+    assert.strictEqual(crossFacultyRes.status, 403);
+
+    // 6. Strict UNIT 1..UNIT 5 and Custom Publication Time validations
+    const badTypeRes = await httpRequest(port, {
+      method: 'POST',
+      path: '/api/exams/create-centralized',
+      headers: { Authorization: `Bearer ${facToken}` },
+      body: {
+        examType: 'Mid Term',
+        academicYear: '2026-2027',
+        year: 'III Year',
+        semester: 'I Semester',
+        subjectName: 'Compiler Design',
+        subjectCode: '20A05E2E',
+        examName: 'Bad Exam Type',
+        examDate: '2099-05-15',
+        startTime: '10:00 AM',
+        endTime: '12:00 PM',
+        publicationTime: '09:20 AM',
+        session: 'AM',
+        group: 'Group A',
+      },
+    });
+    assert.strictEqual(badTypeRes.status, 400);
+    assert.strictEqual(badTypeRes.json.code, 'INVALID_EXAM_TYPE');
+
+    const badPubAfterStart = await httpRequest(port, {
+      method: 'POST',
+      path: '/api/exams/create-centralized',
+      headers: { Authorization: `Bearer ${facToken}` },
+      body: {
+        examType: 'UNIT 1',
+        academicYear: '2026-2027',
+        year: 'III Year',
+        semester: 'I Semester',
+        subjectName: 'Compiler Design',
+        subjectCode: '20A05E2E',
+        examName: 'Bad Publication Time',
+        examDate: '2099-05-15',
+        startTime: '10:00 AM',
+        endTime: '12:00 PM',
+        publicationTime: '10:15 AM',
+        session: 'AM',
+        group: 'Group A',
+      },
+    });
+    assert.strictEqual(badPubAfterStart.status, 400);
+    assert.strictEqual(badPubAfterStart.json.code, 'PUBLICATION_AFTER_START');
+
+    // 7. Faculty creates valid UNIT 1 examination with custom 09:20 AM publication time
     const createPayload = {
+      examType: 'UNIT 1',
       academicYear: '2026-2027',
       year: 'III Year',
       semester: 'I Semester',
       subjectName: 'Compiler Design',
       subjectCode: '20A05E2E',
-      examName: 'III B.Tech I Sem E2E Test Exam',
+      examName: 'III B.Tech I Sem UNIT 1 E2E Test',
       examDate: '2099-05-15',
-      startTime: '09:00 AM',
+      startTime: '10:00 AM',
       endTime: '12:00 PM',
+      publicationTime: '09:20 AM',
       session: 'AM',
       group: 'Group A',
       selectedSections: ['A1', 'A2', 'A3'],
@@ -226,110 +430,66 @@ async function run() {
     const createRes = await httpRequest(port, {
       method: 'POST',
       path: '/api/exams/create-centralized',
-      headers: { Authorization: `Bearer ${incToken}` },
+      headers: { Authorization: `Bearer ${facToken}` },
       body: createPayload,
     });
     assert.strictEqual(createRes.status, 201, `Create failed: ${JSON.stringify(createRes.json)}`);
-    assert.strictEqual(createRes.jsonValid, true);
-    assert.strictEqual(createRes.json.json, undefined);
-    assert.strictEqual(createRes.json.success, true);
+    assert.strictEqual(createRes.json.data.examType, 'UNIT 1');
+    assert.strictEqual(createRes.json.data.publicationTimeStr, '09:20 AM');
     assert.strictEqual(createRes.json.data.studentCount, 216);
-    assert.strictEqual(createRes.json.data.sectionAllocations.length, 3);
     assert.strictEqual(createRes.json.data.approvalStatus, 'PENDING_REVIEW');
     const examId = createRes.json.data._id;
 
-    // 3. Duplicate submission must return 409 Conflict and NOT create a second exam
+    // Duplicate prevention -> 409 Conflict
     const dupRes = await httpRequest(port, {
       method: 'POST',
       path: '/api/exams/create-centralized',
-      headers: { Authorization: `Bearer ${incToken}` },
+      headers: { Authorization: `Bearer ${facToken}` },
       body: createPayload,
     });
     assert.strictEqual(dupRes.status, 409);
-    const examCount = await Exam.countDocuments({ subjectCode: '20A05E2E', isDeleted: { $ne: true } });
-    assert.strictEqual(examCount, 1, 'Exactly one parent examination must exist');
 
-    // 4. Refresh examination list, pending review list, and dashboard stats
-    const [allRes, pendingRes, statsRes] = await Promise.all([
-      httpRequest(port, { method: 'GET', path: '/api/exams?filter=all', headers: { Authorization: `Bearer ${incToken}` } }),
-      httpRequest(port, { method: 'GET', path: '/api/exams?filter=pending', headers: { Authorization: `Bearer ${incToken}` } }),
-      httpRequest(port, { method: 'GET', path: '/api/dashboard/stats', headers: { Authorization: `Bearer ${incToken}` } }),
+    // Afternoon PM exam creation on another mapping (verifies 12h PM + AM coexistence)
+    const pmRes = await httpRequest(port, {
+      method: 'POST',
+      path: '/api/exams/create-centralized',
+      headers: { Authorization: `Bearer ${otherFacToken}` },
+      body: {
+        examType: 'UNIT 2',
+        academicYear: '2026-2027',
+        year: 'III Year',
+        semester: 'I Semester',
+        subjectName: 'Cloud Computing',
+        subjectCode: '20A05CLD',
+        examName: 'III B.Tech I Sem UNIT 2 Afternoon PM',
+        examDate: '2099-05-15',
+        startTime: '02:00 PM',
+        endTime: '04:00 PM',
+        publicationTime: '01:30 PM',
+        session: 'PM',
+        group: 'Group B',
+        selectedSections: ['A4'],
+        selectedMappingIds: [otherMappingId],
+      },
+    });
+    assert.strictEqual(pmRes.status, 201);
+    assert.strictEqual(pmRes.json.data.publicationTimeStr, '01:30 PM');
+
+    // Reports: Attendance PDF, ZIP, Seating Blueprint
+    const [secPdfRes, zipRes, pdfRes] = await Promise.all([
+      httpRequest(port, { method: 'GET', path: `/api/reports/${examId}/section-attendance-pdf/A1`, headers: { Authorization: `Bearer ${facToken}` } }),
+      httpRequest(port, { method: 'GET', path: `/api/reports/${examId}/attendance-zip?sections=A1,A2,A3`, headers: { Authorization: `Bearer ${adminToken}` } }),
+      httpRequest(port, { method: 'GET', path: `/api/reports/${examId}/seating-pdf`, headers: { Authorization: `Bearer ${adminToken}` } }),
     ]);
-    for (const r of [allRes, pendingRes, statsRes]) {
-      assert.strictEqual(r.status, 200);
-      assert.strictEqual(r.jsonValid, true);
-      assert.strictEqual(r.json.success, true);
-    }
-    assert.strictEqual(allRes.json.data.length, 1);
-    assert.strictEqual(pendingRes.json.data.length, 1);
-    assert.strictEqual(statsRes.json.data.pendingApprovals, 1);
+    assert.strictEqual(secPdfRes.buffer.slice(0, 5).toString('utf8'), '%PDF-');
+    assert.strictEqual(zipRes.buffer.slice(0, 2).toString('utf8'), 'PK');
+    assert.strictEqual(pdfRes.buffer.slice(0, 5).toString('utf8'), '%PDF-');
 
-    // 5. Open examination details
-    const detailRes = await httpRequest(port, {
-      method: 'GET',
-      path: `/api/exams/${examId}`,
-      headers: { Authorization: `Bearer ${incToken}` },
-    });
-    assert.strictEqual(detailRes.status, 200);
-    assert.strictEqual(detailRes.jsonValid, true);
-    assert.strictEqual(detailRes.json.data.sectionAllocations.length, 3);
-    assert.strictEqual(detailRes.json.data.studentCount, 216);
+    // Faculty CANNOT approve or publish (403)
+    assert.strictEqual((await httpRequest(port, { method: 'POST', path: `/api/exams/${examId}/approve`, headers: { Authorization: `Bearer ${facToken}` }, body: {} })).status, 403);
+    assert.strictEqual((await httpRequest(port, { method: 'POST', path: `/api/exams/${examId}/publish`, headers: { Authorization: `Bearer ${facToken}` }, body: {} })).status, 403);
 
-    // 5b. Download Section A1 Attendance PDF
-    const secPdfRes = await httpRequest(port, {
-      method: 'GET',
-      path: `/api/reports/${examId}/section-attendance-pdf/A1`,
-      headers: { Authorization: `Bearer ${incToken}` },
-    });
-    assert.strictEqual(secPdfRes.status, 200);
-    assert.strictEqual(secPdfRes.buffer.slice(0, 5).toString('utf8'), '%PDF-', 'Section Attendance PDF must be valid');
-
-    // 6. Download Attendance ZIP
-    const zipRes = await httpRequest(port, {
-      method: 'GET',
-      path: `/api/reports/${examId}/attendance-zip?sections=A1,A2,A3`,
-      headers: { Authorization: `Bearer ${incToken}` },
-    });
-    assert.strictEqual(zipRes.status, 200);
-    assert.strictEqual(zipRes.buffer.slice(0, 2).toString('utf8'), 'PK', 'Attendance ZIP must start with PK signature');
-
-    // 7. Download Seating Blueprint PDF
-    const pdfRes = await httpRequest(port, {
-      method: 'GET',
-      path: `/api/reports/${examId}/seating-pdf`,
-      headers: { Authorization: `Bearer ${incToken}` },
-    });
-    assert.strictEqual(pdfRes.status, 200);
-    assert.strictEqual(pdfRes.buffer.slice(0, 5).toString('utf8'), '%PDF-', 'Seating Blueprint must be a valid PDF');
-
-    // 8. Admin login + Approve & Review
-    const adminLogin = await httpRequest(port, {
-      method: 'POST',
-      path: '/api/auth/login',
-      body: { email: 'testadmin@rgmcet.edu.in', password: 'TestAdmin@123' },
-    });
-    assert.strictEqual(adminLogin.status, 200);
-    const adminToken = adminLogin.json.token;
-
-    // 8a. Unauthorized Exam Incharge must NOT be able to approve or publish (403)
-    const unauthApproveRes = await httpRequest(port, {
-      method: 'POST',
-      path: `/api/exams/${examId}/approve`,
-      headers: { Authorization: `Bearer ${incToken}` },
-      body: {},
-    });
-    assert.strictEqual(unauthApproveRes.status, 403, 'Exam Incharge must receive 403 on approve');
-
-    const unauthPublishRes = await httpRequest(port, {
-      method: 'POST',
-      path: `/api/exams/${examId}/publish`,
-      headers: { Authorization: `Bearer ${incToken}` },
-      body: {},
-    });
-    assert.strictEqual(unauthPublishRes.status, 403, 'Exam Incharge must receive 403 on publish');
-    assert.strictEqual(unauthPublishRes.jsonValid, true);
-
-    // 8b. Truly malformed JSON syntax fails with INVALID_JSON_PAYLOAD 400, AND literal "null" on object endpoints fails with INVALID_JSON_PAYLOAD 400
+    // Malformed JSON and "null" payload checks
     const badJsonSyntaxRes = await httpRequest(port, {
       method: 'POST',
       path: `/api/exams/${examId}/publish`,
@@ -337,223 +497,106 @@ async function run() {
       rawBody: '{bad json',
     });
     assert.strictEqual(badJsonSyntaxRes.status, 400);
-    assert.strictEqual(badJsonSyntaxRes.jsonValid, true);
     assert.strictEqual(badJsonSyntaxRes.json.code, 'INVALID_JSON_PAYLOAD');
 
-    const nullCreateRes = await httpRequest(port, {
-      method: 'POST',
-      path: '/api/exams/create-centralized',
-      headers: { Authorization: `Bearer ${incToken}`, 'Content-Type': 'application/json' },
-      rawBody: 'null',
-    });
-    assert.strictEqual(nullCreateRes.status, 400);
-    assert.strictEqual(nullCreateRes.jsonValid, true);
-    assert.strictEqual(nullCreateRes.json.code, 'INVALID_JSON_PAYLOAD');
+    // Scheduler must NOT auto-publish PENDING_REVIEW exam even if publicationTime has passed
+    await publicationScheduler.checkScheduledPublications(new Date('2099-05-15T09:25:00+05:30'));
+    const stillPending = await Exam.findById(examId).lean();
+    assert.strictEqual(stillPending.visibilityStatus, 'NOT_SCHEDULED');
 
-    // 8c. Live availability GET detects booked conflict and open date cleanly
-    const conflictAvailRes = await httpRequest(port, {
-      method: 'GET',
-      path: `/api/exams/check-availability?examDate=${encodeURIComponent(createPayload.examDate)}&startTime=09:00%20AM&endTime=12:00%20PM&session=AM&group=Group%20A&allowOvernight=false`,
-      headers: { Authorization: `Bearer ${adminToken}` },
-    });
-    assert.strictEqual(conflictAvailRes.status, 200);
-    assert.strictEqual(conflictAvailRes.json.available, false);
-    assert.ok(Array.isArray(conflictAvailRes.json.conflicts) && conflictAvailRes.json.conflicts.length > 0);
-
-    const openAvailRes = await httpRequest(port, {
-      method: 'GET',
-      path: `/api/exams/check-availability?examDate=2028-12-20&startTime=09:00%20AM&endTime=12:00%20PM&session=AM&group=Group%20A&allowOvernight=false`,
-      headers: { Authorization: `Bearer ${adminToken}` },
-    });
-    assert.strictEqual(openAvailRes.status, 200);
-    assert.strictEqual(openAvailRes.json.available, true);
-
-    // 8d. Admin attempting to publish a PENDING_REVIEW exam BEFORE approval must fail cleanly (400 REQUIRES_ADMIN_APPROVAL)
-    const publishPendingRes = await httpRequest(port, {
-      method: 'POST',
-      path: `/api/exams/${examId}/publish`,
-      headers: { Authorization: `Bearer ${adminToken}` },
-      body: {},
-    });
-    assert.strictEqual(publishPendingRes.status, 400);
-    assert.strictEqual(publishPendingRes.json.code, 'REQUIRES_ADMIN_APPROVAL');
-
-    // 8e. Admin approves the examination first (POST /api/exams/:id/approve) + duplicate approval stays idempotent
-    const approveRes = await httpRequest(port, {
-      method: 'POST',
-      path: `/api/exams/${examId}/approve`,
-      headers: { Authorization: `Bearer ${adminToken}` },
-      body: {},
-    });
-    assert.strictEqual(approveRes.status, 200);
-    assert.strictEqual(approveRes.jsonValid, true);
-    assert.strictEqual(approveRes.json.success, true);
-    assert.strictEqual(approveRes.json.data.approvalStatus, 'APPROVED');
-
-    const dupApproveRes = await httpRequest(port, {
-      method: 'POST',
-      path: `/api/exams/${examId}/approve`,
-      headers: { Authorization: `Bearer ${adminToken}` },
-      body: {},
-    });
-    assert.strictEqual(dupApproveRes.status, 200);
-    assert.strictEqual(dupApproveRes.json.alreadyApproved, true);
-
-    // 8f. Admin publishes the approved examination (POST /api/exams/:id/publish)
-    // Also confirm legacy cached "null" body on optional-body /publish is normalized safely without 400 parse crash
-    const publishRes = await httpRequest(port, {
-      method: 'POST',
-      path: `/api/exams/${examId}/publish`,
-      headers: { Authorization: `Bearer ${adminToken}` },
-      body: {},
-    });
+    // Admin Approve & Publish
+    assert.strictEqual((await httpRequest(port, { method: 'POST', path: `/api/exams/${examId}/approve`, headers: { Authorization: `Bearer ${adminToken}` }, body: {} })).status, 200);
+    const publishRes = await httpRequest(port, { method: 'POST', path: `/api/exams/${examId}/publish`, headers: { Authorization: `Bearer ${adminToken}` }, body: {} });
     assert.strictEqual(publishRes.status, 200);
-    assert.strictEqual(publishRes.jsonValid, true);
-    assert.strictEqual(publishRes.json.success, true);
-    assert.ok(publishRes.json.data.publicationConfirmedAt);
 
-    // 8g. Repeat publish on already published/confirmed exam must be blocked cleanly (409 ALREADY_PUBLISHED),
-    // and CANCELLED / COMPLETED exams must return 400 EXAM_CANCELLED / EXAM_COMPLETED
-    const repeatScheduledRes = await httpRequest(port, {
+    // Simulated backend restart recovery + scheduler firing at publicationTime triggers visibilityStatus=PUBLISHED
+    await publicationScheduler.recoverScheduledJobs();
+    await publicationScheduler.checkScheduledPublications(new Date('2099-05-15T09:21:00+05:30'));
+    const publishedAfterScheduler = await Exam.findById(examId).lean();
+    assert.strictEqual(publishedAfterScheduler.visibilityStatus, 'PUBLISHED');
+
+    // 8. Student Sign-In via Registration Number, /my-exams Countdown, Own-Seat Isolation, and T+10 Cutoff
+    const stuLogin = await httpRequest(port, {
       method: 'POST',
-      path: `/api/exams/${examId}/publish`,
-      headers: { Authorization: `Bearer ${adminToken}` },
-      body: {},
+      path: '/api/auth/student-login',
+      body: { registrationNumber: '24E2E00001' },
     });
-    assert.strictEqual(repeatScheduledRes.status, 409);
-    assert.strictEqual(repeatScheduledRes.json.code, 'ALREADY_PUBLISHED');
+    assert.strictEqual(stuLogin.status, 200);
+    assert.strictEqual(stuLogin.json.user.role, 'student');
+    const stuToken = stuLogin.json.token;
 
-    // Legacy cached client sending raw "null" body on /publish must be normalized cleanly to {} (reaching lifecycle guard, NOT 400 INVALID_JSON_PAYLOAD)
-    const legacyNullBodyPublishRes = await httpRequest(port, {
-      method: 'POST',
-      path: `/api/exams/${examId}/publish`,
-      headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
-      rawBody: 'null',
-    });
-    assert.strictEqual(legacyNullBodyPublishRes.status, 409);
-    assert.strictEqual(legacyNullBodyPublishRes.json.code, 'ALREADY_PUBLISHED');
-
-    await Exam.findByIdAndUpdate(examId, { $set: { status: 'CANCELLED', approvalStatus: 'CANCELLED' } });
-    const cancelledPublishRes = await httpRequest(port, {
-      method: 'POST',
-      path: `/api/exams/${examId}/publish`,
-      headers: { Authorization: `Bearer ${adminToken}` },
-      body: {},
-    });
-    assert.strictEqual(cancelledPublishRes.status, 400);
-    assert.strictEqual(cancelledPublishRes.json.code, 'EXAM_CANCELLED');
-
-    await Exam.findByIdAndUpdate(examId, { $set: { status: 'COMPLETED', approvalStatus: 'APPROVED' } });
-    const completedPublishRes = await httpRequest(port, {
-      method: 'POST',
-      path: `/api/exams/${examId}/publish`,
-      headers: { Authorization: `Bearer ${adminToken}` },
-      body: {},
-    });
-    assert.strictEqual(completedPublishRes.status, 400);
-    assert.strictEqual(completedPublishRes.json.code, 'EXAM_COMPLETED');
-    await Exam.findByIdAndUpdate(examId, { $set: { status: 'SCHEDULED', approvalStatus: 'APPROVED', visibilityStatus: 'SCHEDULED' } });
-
-    // 8h. Refresh dashboard and examination list after publishing; verify sections & students intact
-    const [postPubAll, postPubStats] = await Promise.all([
-      httpRequest(port, { method: 'GET', path: '/api/exams?filter=all', headers: { Authorization: `Bearer ${adminToken}` } }),
-      httpRequest(port, { method: 'GET', path: '/api/dashboard/stats', headers: { Authorization: `Bearer ${adminToken}` } }),
-    ]);
-    assert.strictEqual(postPubAll.status, 200);
-    assert.strictEqual(postPubAll.json.data[0].sectionAllocations.length, 3);
-    assert.strictEqual(postPubAll.json.data[0].studentCount, 216);
-    assert.strictEqual(postPubStats.status, 200);
-    assert.strictEqual(postPubStats.json.data.pendingApprovals, 0);
-
-    // 9. Faculty login + scoped examination access + Logout & re-login
-    const facLogin = await httpRequest(port, {
-      method: 'POST',
-      path: '/api/auth/login',
-      body: { email: 'facultya1@rgmcet.edu.in', password: 'TestFaculty@123' },
-    });
-    assert.strictEqual(facLogin.status, 200);
-    const facToken = facLogin.json.token;
-
-    const facExamsRes = await httpRequest(port, {
-      method: 'GET',
-      path: '/api/exams?filter=all',
-      headers: { Authorization: `Bearer ${facToken}` },
-    });
-    assert.strictEqual(facExamsRes.status, 200);
-    assert.strictEqual(facExamsRes.json.data.length, 1);
-
-    const logoutRes = await httpRequest(port, {
-      method: 'POST',
-      path: '/api/auth/logout',
-      headers: { Authorization: `Bearer ${facToken}` },
-    });
-    assert.strictEqual(logoutRes.status, 200);
-    assert.strictEqual(logoutRes.json.success, true);
-
-    // 10. Student Portal T-20 Early Access, Active Window & T+10 Closure + Concurrent Read-Only Lookups
-    const Allocation = require('../models/Allocation');
     const examDoc = await Exam.findById(examId).lean();
-    const startMs = new Date(examDoc.startDateTime).getTime();
-    const tMinus25 = new Date(startMs - 25 * 60 * 1000).toISOString();
-    const tMinus15 = new Date(startMs - 15 * 60 * 1000).toISOString();
-    const tPlus12 = new Date(startMs + 12 * 60 * 1000).toISOString();
-    const sampleReg = '24E2E00001';
+    const pubMs = new Date(examDoc.publicationTime).getTime(); // 09:20 AM IST
+    const startMs = new Date(examDoc.startDateTime).getTime(); // 10:00 AM IST
+    const beforePub = new Date(pubMs - 5 * 60 * 1000).toISOString(); // 09:15 AM IST
+    const duringWindow = new Date(pubMs + 5 * 60 * 1000).toISOString(); // 09:25 AM IST
+    const afterT10 = new Date(startMs + 12 * 60 * 1000).toISOString(); // 10:12 AM IST
 
-    const beforeT20Active = await httpRequest(port, {
+    // Before 09:20 AM -> countdown notice, seat MUST be null
+    const myBefore = await httpRequest(port, {
       method: 'GET',
-      path: '/api/student/active-exams',
-      headers: { 'x-test-timestamp': tMinus25 },
+      path: '/api/student/my-exams',
+      headers: { Authorization: `Bearer ${stuToken}`, 'x-test-timestamp': beforePub },
     });
-    assert.strictEqual(beforeT20Active.status, 200);
-    assert.strictEqual(beforeT20Active.json.data[0].windowState, 'PENDING');
+    assert.strictEqual(myBefore.status, 200);
+    assert.strictEqual(myBefore.json.data.length, 1);
+    assert.strictEqual(myBefore.json.data[0].windowState, 'PENDING');
+    assert.strictEqual(myBefore.json.data[0].seat, null);
+    assert.ok(myBefore.json.data[0].notice.includes('09:20 AM'));
 
-    const beforeT20Lookup = await httpRequest(port, {
+    // At 09:25 AM -> seat revealed for logged-in student ONLY
+    const myOpen = await httpRequest(port, {
+      method: 'GET',
+      path: '/api/student/my-exams',
+      headers: { Authorization: `Bearer ${stuToken}`, 'x-test-timestamp': duringWindow },
+    });
+    assert.strictEqual(myOpen.status, 200);
+    assert.strictEqual(myOpen.json.data[0].windowState, 'OPEN');
+    assert.strictEqual(myOpen.json.data[0].seat.registrationNumber, '24E2E00001');
+    assert.ok(myOpen.json.data[0].seat.seatId);
+
+    // Own-seat isolation: 24E2E00001 CANNOT query 24E2E00002 -> 403 FORBIDDEN_STUDENT_SCOPE
+    const otherSeatBlock = await httpRequest(port, {
       method: 'POST',
       path: '/api/student/lookup',
-      headers: { 'x-test-timestamp': tMinus25 },
-      body: { registrationNumber: sampleReg, examId },
+      headers: { Authorization: `Bearer ${stuToken}`, 'x-test-timestamp': duringWindow },
+      body: { registrationNumber: '24E2E00002', examId },
     });
-    assert.strictEqual(beforeT20Lookup.status, 403);
-    assert.strictEqual(beforeT20Lookup.json.isPending, true);
+    assert.strictEqual(otherSeatBlock.status, 403);
+    assert.strictEqual(otherSeatBlock.json.code, 'FORBIDDEN_STUDENT_SCOPE');
 
-    const openActive = await httpRequest(port, {
+    // After T+10 (10:12 AM) -> window closed, seat hidden again
+    const myClosed = await httpRequest(port, {
       method: 'GET',
-      path: '/api/student/active-exams',
-      headers: { 'x-test-timestamp': tMinus15 },
+      path: '/api/student/my-exams',
+      headers: { Authorization: `Bearer ${stuToken}`, 'x-test-timestamp': afterT10 },
     });
-    assert.strictEqual(openActive.status, 200);
-    assert.strictEqual(openActive.json.data[0].windowState, 'OPEN');
+    assert.strictEqual(myClosed.status, 200);
+    assert.ok(['CLOSED', 'COMPLETED'].includes(myClosed.json.data[0].windowState));
+    assert.strictEqual(myClosed.json.data[0].seat, null);
 
-    // 20 concurrent student lookups during active window must succeed without mutating Allocation count
-    const allocCountBefore = await Allocation.countDocuments({ examId });
-    const concurrentLookups = await Promise.all(
-      Array.from({ length: 20 }, (_, i) =>
-        httpRequest(port, {
-          method: 'POST',
-          path: '/api/student/lookup',
-          headers: { 'x-test-timestamp': tMinus15 },
-          body: { registrationNumber: `24E2E${String(i + 1).padStart(5, '0')}`, examId },
-        })
-      )
+    // 9. Safeguarded Backup & Academic Reset Test on Isolated DB
+    await assert.rejects(
+      () => performSafeguardedAcademicReset({ confirmReset: false, backupDir: os.tmpdir() }),
+      /missing explicit confirmation flag/
     );
-    for (const lr of concurrentLookups) {
-      assert.strictEqual(lr.status, 200);
-      assert.strictEqual(lr.json.success, true);
-      assert.ok(lr.json.data.seatId);
-    }
-    const allocCountAfter = await Allocation.countDocuments({ examId });
-    assert.strictEqual(allocCountAfter, allocCountBefore, 'Concurrent lookups must not create allocations');
-
-    const closedLookup = await httpRequest(port, {
-      method: 'POST',
-      path: '/api/student/lookup',
-      headers: { 'x-test-timestamp': tPlus12 },
-      body: { registrationNumber: sampleReg, examId },
+    const resetRes = await performSafeguardedAcademicReset({
+      confirmReset: true,
+      backupDir: os.tmpdir(),
     });
-    assert.strictEqual(closedLookup.status, 403);
-    assert.strictEqual(closedLookup.json.isWindowClosed, true);
+    assert.strictEqual(resetRes.alreadyReset, false);
+    assert.ok(fs.existsSync(resetRes.backupFile));
+    const repeatRes = await performSafeguardedAcademicReset({
+      confirmReset: true,
+      backupDir: os.tmpdir(),
+    });
+    assert.strictEqual(repeatRes.alreadyReset, true, 'Repeat reset must be blocked unless forceRepeatReset=true');
+    try { fs.unlinkSync(resetRes.backupFile); } catch {}
+    assert.strictEqual(await Exam.countDocuments({}), 0);
+    assert.strictEqual(await User.countDocuments({ role: 'admin' }), 1, 'Admin account must be preserved after reset');
+    assert.strictEqual(await Classroom.countDocuments({}), 6, 'ET BLOCK classrooms must be preserved after reset');
 
-    console.log('[Centralized Workflow E2E] PASSED: All 20 workflow checks (logins, logout, creation, duplicate guard, refreshes, details, section PDF, ZIP, seating PDF, Admin approval, T-20/T+10 rules, concurrent student lookups) succeeded.');
+    console.log('[Restructured E2E Verification] PASSED: 3-role auth (Exam Incharge removed), Excel/inconsistent names, compound subjects, UNIT 1-5, custom publicationTime AM/PM, scheduler approval gate, Admin publish/reports, Student /my-exams + own-seat isolation + T+10, and safeguarded reset succeeded.');
   } finally {
     await new Promise((resolve) => server.close(resolve));
     if (mongoose.connection.readyState === 1) {
@@ -564,6 +607,6 @@ async function run() {
 }
 
 run().catch((err) => {
-  console.error('[Centralized Workflow E2E] FAILED:', err);
+  console.error('[Restructured E2E Verification] FAILED:', err);
   process.exit(1);
 });

@@ -31,13 +31,16 @@ const FacultyAssignments = () => {
   const [uploadMode, setUploadMode] = useState('multi');
 
   // Single form states
-  const [facultyName, setFacultyName] = useState('Dr. K. Subba Rao');
-  const [subjectName, setSubjectName] = useState('CNIP');
-  const [subjectCode, setSubjectCode] = useState('20A05502T');
+  const [facultyName, setFacultyName] = useState('');
+  const [facultyIdCode, setFacultyIdCode] = useState('');
+  const [subjectName, setSubjectName] = useState('');
+  const [subjectCode, setSubjectCode] = useState('');
   const [section, setSection] = useState('A1');
   const [group, setGroup] = useState('Group A');
   const [selectedFile, setSelectedFile] = useState(null);
   const [replaceExisting, setReplaceExisting] = useState(true);
+  const [inconsistentNames, setInconsistentNames] = useState([]);
+  const [inspectMultiIndex, setInspectMultiIndex] = useState(null);
 
   // Preview & Background Job states
   const [uploading, setUploading] = useState(false);
@@ -180,19 +183,22 @@ const FacultyAssignments = () => {
   const handleFileChange = (e) => {
     const file = e.target.files[0];
     if (file) {
-      if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-        setPreviewError('Please upload a valid PDF document containing the student roster.');
+      const lower = file.name.toLowerCase();
+      const allowedExt = ['.pdf', '.xlsx', '.xls', '.csv'].some((ext) => lower.endsWith(ext));
+      if (!allowedExt) {
+        setPreviewError('Please upload a valid PDF, Excel (.xlsx/.xls), or CSV student roster document.');
         setSelectedFile(null);
         return;
       }
       if (file.size > 40 * 1024 * 1024) {
-        setPreviewError('The selected file exceeds the 40MB limit. Please upload a smaller PDF.');
+        setPreviewError('The selected file exceeds the 40MB limit. Please upload a smaller file.');
         setSelectedFile(null);
         return;
       }
       setSelectedFile(file);
       setPreviewError('');
       setPreviewStudents([]);
+      setInconsistentNames([]);
       setIsMultiRoster(false);
       setMultiMappings([]);
       setMultiSummary(null);
@@ -202,7 +208,7 @@ const FacultyAssignments = () => {
   const handleUploadAndPreview = async (e) => {
     e.preventDefault();
     if (!selectedFile) {
-      setPreviewError('Please select a student roster PDF file to upload.');
+      setPreviewError('Please select a student roster PDF, Excel, or CSV file to upload.');
       return;
     }
 
@@ -230,6 +236,7 @@ const FacultyAssignments = () => {
       setPreviewError('');
       setRefreshWarning('');
       setSuccessMessage('');
+      setInconsistentNames([]);
       setActiveJob(null);
 
       const formData = new FormData();
@@ -237,6 +244,9 @@ const FacultyAssignments = () => {
       formData.append('uploadMode', uploadMode);
       if (uploadMode === 'single') {
         formData.append('facultyName', facultyName.trim());
+        if (facultyIdCode.trim()) {
+          formData.append('facultyIdCode', facultyIdCode.trim().toUpperCase());
+        }
         formData.append('subjectName', subjectName.trim());
         formData.append('subjectCode', subjectCode.trim());
         formData.append('section', section.trim().toUpperCase());
@@ -252,19 +262,23 @@ const FacultyAssignments = () => {
         setActiveJob(startRes.data.data);
         const completedJob = await pollJobUntilTerminal(startRes.data.data.jobId);
         if (completedJob.status === 'FAILED') {
-          setPreviewError(completedJob.errorMessage || 'Failed to extract student rosters from PDF.');
+          setPreviewError(completedJob.errorMessage || 'Failed to extract student rosters from uploaded file.');
           return;
         }
         extractionData = {
           success: true,
           isMultiRoster: completedJob.isMultiRoster,
           summary: completedJob.summary,
+          inconsistentNames: completedJob.summary?.inconsistentNames || [],
           mappings: completedJob.previewMappings || completedJob.mappings || [],
           students: (completedJob.previewMappings || []).flatMap((m) => m.students || []),
         };
       }
 
       if (extractionData?.success) {
+        const mismatches = extractionData.inconsistentNames || extractionData.summary?.inconsistentNames || [];
+        setInconsistentNames(Array.isArray(mismatches) ? mismatches : []);
+
         if (extractionData.isMultiRoster && extractionData.mappings && extractionData.mappings.length > 0) {
           setIsMultiRoster(true);
           setMultiMappings(extractionData.mappings);
@@ -286,7 +300,7 @@ const FacultyAssignments = () => {
             setPreviewStudents(extracted);
           } else {
             setPreviewError(
-              'No valid student records could be extracted from this PDF. Please verify that the PDF contains tabular registration numbers and student names.'
+              'No valid student records could be extracted from this file. Please verify that it contains valid registration numbers and student names.'
             );
           }
         }
@@ -298,10 +312,34 @@ const FacultyAssignments = () => {
         return;
       }
       console.error('[FacultyAssignments] Upload preview failed:', err);
-      setPreviewError(formatApiError(err, 'Failed to extract students from PDF.'));
+      setPreviewError(formatApiError(err, 'Failed to extract students from file.'));
     } finally {
       setUploading(false);
     }
+  };
+
+  // Update preview student name inline (for resolving inconsistent names before save)
+  const handleUpdatePreviewStudentName = (index, newName) => {
+    setPreviewStudents((prev) => {
+      const copy = [...prev];
+      copy[index] = { ...copy[index], studentName: newName };
+      return copy;
+    });
+  };
+
+  const handleUpdateInspectModalStudentName = (regNo, newName) => {
+    if (inspectMultiIndex === null) return;
+    setMultiMappings((prev) => {
+      const copy = [...prev];
+      const target = copy[inspectMultiIndex];
+      if (!target) return prev;
+      const updatedStudents = (target.students || []).map((st) =>
+        st.registrationNumber === regNo ? { ...st, studentName: newName, name: newName } : st
+      );
+      copy[inspectMultiIndex] = { ...target, students: updatedStudents };
+      setInspectModalRoster(copy[inspectMultiIndex]);
+      return copy;
+    });
   };
 
   // Update multi mapping row inline
@@ -333,6 +371,7 @@ const FacultyAssignments = () => {
 
       const payload = {
         facultyName: facultyName.trim(),
+        facultyIdCode: facultyIdCode.trim().toUpperCase(),
         subjectName: subjectName.trim(),
         subjectCode: subjectCode.trim() || 'SUB-CODE',
         section: section.trim().toUpperCase(),
@@ -398,12 +437,12 @@ const FacultyAssignments = () => {
 
     setPreviewError(
       job.errorMessage ||
-        (failedCount > 0
-          ? job.failedItems
-              .slice(0, 5)
-              .map((f) => `${f.subjectCode || f.subjectName} (${f.section || '?'}): ${f.error}`)
-              .join('\n')
-          : 'Failed to save batch mappings.')
+      (failedCount > 0
+        ? job.failedItems
+          .slice(0, 5)
+          .map((f) => `${f.subjectCode || f.subjectName} (${f.section || '?'}): ${f.error}`)
+          .join('\n')
+        : 'Failed to save batch mappings.')
     );
     return false;
   };
@@ -602,15 +641,14 @@ const FacultyAssignments = () => {
                 ID: {activeJob.jobId}
               </span>
               <span
-                className={`text-[10px] font-bold px-2 py-0.5 rounded ${
-                  activeJob.status === 'COMPLETED'
-                    ? 'bg-emerald-100 text-emerald-800'
-                    : activeJob.status === 'PARTIAL_FAILED'
-                      ? 'bg-amber-100 text-amber-800'
-                      : activeJob.status === 'FAILED'
-                        ? 'bg-red-100 text-red-700'
-                        : 'bg-blue-100 text-blue-700'
-                }`}
+                className={`text-[10px] font-bold px-2 py-0.5 rounded ${activeJob.status === 'COMPLETED'
+                  ? 'bg-emerald-100 text-emerald-800'
+                  : activeJob.status === 'PARTIAL_FAILED'
+                    ? 'bg-amber-100 text-amber-800'
+                    : activeJob.status === 'FAILED'
+                      ? 'bg-red-100 text-red-700'
+                      : 'bg-blue-100 text-blue-700'
+                  }`}
               >
                 {activeJob.status}
               </span>
@@ -624,13 +662,12 @@ const FacultyAssignments = () => {
 
           <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
             <div
-              className={`h-full transition-all duration-300 ${
-                activeJob.status === 'FAILED'
-                  ? 'bg-red-500'
-                  : activeJob.status === 'PARTIAL_FAILED'
-                    ? 'bg-amber-500'
-                    : 'bg-primary'
-              }`}
+              className={`h-full transition-all duration-300 ${activeJob.status === 'FAILED'
+                ? 'bg-red-500'
+                : activeJob.status === 'PARTIAL_FAILED'
+                  ? 'bg-amber-500'
+                  : 'bg-primary'
+                }`}
               style={{ width: `${Math.min(100, Math.max(5, activeJob.progress?.percent ?? 0))}%` }}
             />
           </div>
@@ -650,6 +687,35 @@ const FacultyAssignments = () => {
                 </button>
               )}
           </div>
+        </div>
+      )}
+
+      {/* Inconsistent Student Name Warning Banner */}
+      {inconsistentNames.length > 0 && (
+        <div className="p-4 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-900 space-y-1.5 shadow-xs">
+          <div className="font-bold flex items-center justify-between">
+            <span>
+              Inconsistent Student Name(s) Detected ({inconsistentNames.length}) — Review &amp; Edit Before Confirming Save
+            </span>
+            <button
+              type="button"
+              onClick={() => setInconsistentNames([])}
+              className="text-amber-700 hover:text-amber-900 cursor-pointer"
+            >
+              <X size={14} />
+            </button>
+          </div>
+          <ul className="list-disc pl-5 space-y-0.5 text-[11px]">
+            {inconsistentNames.slice(0, 8).map((item) => (
+              <li key={item.registrationNumber}>
+                <span className="font-mono font-bold">{item.registrationNumber}</span>:{' '}
+                {(item.names || []).join(' vs ')}
+              </li>
+            ))}
+          </ul>
+          <p className="text-[11px] text-amber-800">
+            Click &quot;View&quot; on any extracted mapping row (or edit names inline) to standardize student names before saving.
+          </p>
         </div>
       )}
 
@@ -709,19 +775,33 @@ const FacultyAssignments = () => {
             <form onSubmit={handleUploadAndPreview} className="space-y-3.5">
               {uploadMode === 'single' && (
                 <>
-                  {/* Faculty Name */}
-                  <div>
-                    <label className="block text-[11px] font-bold text-navy-800 mb-1">
-                      Faculty Name: <span className="text-red-500">*</span>
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={facultyName}
-                      onChange={(e) => setFacultyName(e.target.value)}
-                      placeholder="e.g. Dr. K. Subba Rao"
-                      className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary bg-white font-medium"
-                    />
+                  {/* Faculty Name & Optional ID */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div className="sm:col-span-2">
+                      <label className="block text-[11px] font-bold text-navy-800 mb-1">
+                        Faculty Name: <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={facultyName}
+                        onChange={(e) => setFacultyName(e.target.value)}
+                        placeholder="e.g. Dr. Rajesh Kumar"
+                        className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary bg-white font-medium"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-navy-800 mb-1">
+                        Faculty ID:
+                      </label>
+                      <input
+                        type="text"
+                        value={facultyIdCode}
+                        onChange={(e) => setFacultyIdCode(e.target.value)}
+                        placeholder="FAC101"
+                        className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary bg-white font-mono uppercase"
+                      />
+                    </div>
                   </div>
 
                   {/* Subject Presets & Custom Name */}
@@ -802,28 +882,28 @@ const FacultyAssignments = () => {
                 </>
               )}
 
-              {/* Student PDF File Dropzone */}
+              {/* Student PDF / Excel / CSV Dropzone */}
               <div>
                 <label className="block text-[11px] font-bold text-navy-800 mb-1">
-                  Select Roster PDF Document: <span className="text-red-500">*</span>
+                  Select Roster File (PDF, Excel .xlsx/.xls, or CSV): <span className="text-red-500">*</span>
                 </label>
                 <div className="border-2 border-dashed border-slate-300 hover:border-primary/60 rounded-xl p-4 text-center bg-slate-50/50 transition-colors">
                   <input
                     type="file"
                     id="studentPdfFile"
-                    accept=".pdf,application/pdf"
+                    accept=".pdf,.xlsx,.xls,.csv,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"
                     onChange={handleFileChange}
                     className="hidden"
                   />
                   <label htmlFor="studentPdfFile" className="cursor-pointer block space-y-1.5">
                     <FileText size={28} className="mx-auto text-primary" />
                     <div className="text-xs font-semibold text-navy-800">
-                      {selectedFile ? selectedFile.name : 'Click to select Student PDF document'}
+                      {selectedFile ? selectedFile.name : 'Click to select PDF, Excel (.xlsx/.xls), or CSV roster'}
                     </div>
                     <div className="text-[10px] text-slate-500">
                       {uploadMode === 'multi'
-                        ? 'Supports 50+ pages multi-subject nominal lists (Group A & Group B)'
-                        : 'Extracts 10-digit Registration Numbers (24091A0501...) & Names'}
+                        ? 'Supports multi-subject PDF nominal rolls & structured Excel/CSV sheets'
+                        : 'Extracts Registration Numbers & Names cleanly for Admin review'}
                     </div>
                   </label>
                 </div>
@@ -885,7 +965,7 @@ const FacultyAssignments = () => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {previewStudents.slice(0, 15).map((st, i) => (
+                      {previewStudents.slice(0, 50).map((st, i) => (
                         <tr key={st.registrationNumber || i} className="hover:bg-slate-50">
                           <td className="py-1 px-2.5 text-center text-slate-400 font-mono text-[10px]">
                             {st.sNo || i + 1}
@@ -894,7 +974,13 @@ const FacultyAssignments = () => {
                             {st.registrationNumber}
                           </td>
                           <td className="py-1 px-3 font-medium text-navy-800">
-                            {st.studentName}
+                            <input
+                              type="text"
+                              value={st.studentName || ''}
+                              onChange={(e) => handleUpdatePreviewStudentName(i, e.target.value)}
+                              className="w-full bg-transparent border-b border-transparent hover:border-slate-300 focus:border-primary focus:outline-none text-[11px]"
+                              title="Click to edit student name before saving"
+                            />
                           </td>
                         </tr>
                       ))}
@@ -1056,6 +1142,14 @@ const FacultyAssignments = () => {
                               className="w-full text-[11px] font-semibold text-slate-800 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-primary focus:outline-none"
                               title="Click to edit faculty name"
                             />
+                            <input
+                              type="text"
+                              value={m.facultyIdCode || ''}
+                              onChange={(e) => handleUpdateMultiMapping(idx, 'facultyIdCode', e.target.value.toUpperCase())}
+                              placeholder="FAC-ID (optional)"
+                              className="font-mono text-[10px] text-slate-500 uppercase bg-transparent border-b border-transparent hover:border-slate-300 focus:border-primary focus:outline-none"
+                              title="Click to edit Faculty ID"
+                            />
                           </td>
                           <td className="py-2 px-2 text-center">
                             <select
@@ -1082,11 +1176,12 @@ const FacultyAssignments = () => {
                             <button
                               type="button"
                               onClick={() => {
+                                setInspectMultiIndex(idx);
                                 setInspectModalRoster(m);
                                 setRosterSearchTerm('');
                               }}
                               className="inline-flex items-center px-2 py-1 rounded text-[10px] font-semibold bg-slate-100 hover:bg-primary hover:text-white text-slate-700 transition-colors cursor-pointer"
-                              title="View student list"
+                              title="View and edit student names"
                             >
                               <Eye size={11} className="mr-1" />
                               View
@@ -1271,7 +1366,10 @@ const FacultyAssignments = () => {
                 </p>
               </div>
               <button
-                onClick={() => setInspectModalRoster(null)}
+                onClick={() => {
+                  setInspectModalRoster(null);
+                  setInspectMultiIndex(null);
+                }}
                 className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-200 rounded-lg cursor-pointer"
               >
                 <X size={18} />
@@ -1312,7 +1410,16 @@ const FacultyAssignments = () => {
                         {st.registrationNumber}
                       </td>
                       <td className="py-1.5 px-3 font-medium text-navy-800">
-                        {st.studentName || st.name}
+                        {inspectMultiIndex !== null ? (
+                          <input
+                            type="text"
+                            value={st.studentName || st.name || ''}
+                            onChange={(e) => handleUpdateInspectModalStudentName(st.registrationNumber, e.target.value)}
+                            className="w-full bg-white border border-slate-200 rounded px-2 py-1 text-xs focus:outline-none focus:border-primary"
+                          />
+                        ) : (
+                          st.studentName || st.name
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -1336,7 +1443,10 @@ const FacultyAssignments = () => {
               </span>
               <button
                 type="button"
-                onClick={() => setInspectModalRoster(null)}
+                onClick={() => {
+                  setInspectModalRoster(null);
+                  setInspectMultiIndex(null);
+                }}
                 className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 rounded-lg font-bold text-slate-700 cursor-pointer"
               >
                 Close
