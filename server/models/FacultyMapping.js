@@ -29,6 +29,7 @@ const facultyMappingSchema = new mongoose.Schema({
   facultyId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
+    index: true,
   },
   facultyIdCode: {
     type: String,
@@ -41,6 +42,11 @@ const facultyMappingSchema = new mongoose.Schema({
     type: String,
     required: [true, 'Faculty name is required'],
     trim: true,
+    index: true,
+  },
+  subjectId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Subject',
     index: true,
   },
   subjectName: {
@@ -78,11 +84,14 @@ const facultyMappingSchema = new mongoose.Schema({
   },
   academicYear: {
     type: String,
-    default: '2026-2027',
+    required: [true, 'Academic year is required'],
+    trim: true,
+    index: true,
   },
   department: {
     type: String,
     default: 'Computer Science and Engineering',
+    trim: true,
   },
   year: {
     type: String,
@@ -90,9 +99,11 @@ const facultyMappingSchema = new mongoose.Schema({
   },
   semester: {
     type: String,
-    default: 'I Semester',
+    required: [true, 'Semester is required'],
+    trim: true,
+    index: true,
   },
-  version: {
+  mappingVersion: {
     type: Number,
     default: 1,
   },
@@ -102,6 +113,10 @@ const facultyMappingSchema = new mongoose.Schema({
     index: true,
   },
   students: [mappedStudentSchema],
+  studentIds: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Student',
+  }],
   studentCount: {
     type: Number,
     default: 0,
@@ -121,17 +136,37 @@ const facultyMappingSchema = new mongoose.Schema({
   updatedAt: {
     type: Date,
     default: Date.now,
-
   },
 });
 
+// Enforce 72-student limit at schema level
 facultyMappingSchema.pre('save', function (next) {
   if (this.students && Array.isArray(this.students)) {
     this.studentCount = this.students.length;
+    if (this.studentCount > 72) {
+      const err = new Error(`Faculty mapping cannot exceed 72 students. Section ${this.section} has ${this.studentCount} students.`);
+      err.statusCode = 422;
+      err.code = 'MAPPING_CAPACITY_EXCEEDED';
+      return next(err);
+    }
+  }
+  if (this.studentIds && Array.isArray(this.studentIds)) {
+    if (this.studentIds.length > 72) {
+      const err = new Error(`Faculty mapping cannot exceed 72 student references. Section ${this.section} has ${this.studentIds.length} references.`);
+      err.statusCode = 422;
+      err.code = 'MAPPING_CAPACITY_EXCEEDED';
+      return next(err);
+    }
   }
   this.updatedAt = new Date();
   next();
 });
+
+// Unique index: one faculty + one subject + one academic year + one semester + one group + one section
+facultyMappingSchema.index(
+  { facultyId: 1, subjectId: 1, academicYear: 1, semester: 1, group: 1, section: 1, isCurrent: 1 },
+  { unique: true, name: 'uniq_faculty_subject_acad_sem_group_section_idx', partialFilterExpression: { isCurrent: true } }
+);
 
 facultyMappingSchema.index({ facultyName: 1, subjectCode: 1, section: 1, isCurrent: 1 });
 facultyMappingSchema.index({ subjectCode: 1, section: 1, academicYear: 1, semester: 1, isCurrent: 1 });

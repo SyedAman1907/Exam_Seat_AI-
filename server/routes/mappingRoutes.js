@@ -22,6 +22,7 @@ const {
   updateMappingById,
   lookupMappedStudents,
   deleteMapping,
+  migrationPreview,
 } = require('../controllers/mappingController');
 
 // Configure Multer storage for PDF uploads (use writable /tmp on read-only Vercel serverless filesystem)
@@ -116,6 +117,7 @@ router.route('/')
 router.get('/portal-groups', getPortalGroups);
 router.get('/active-options', getActiveMappingOptions);
 router.get('/lookup-students', lookupMappedStudents);
+router.get('/migration-preview', authorize('admin'), migrationPreview);
 
 router.route('/:id')
   .get(getMappingById)

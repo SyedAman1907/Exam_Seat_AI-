@@ -11,9 +11,9 @@ import {
   RefreshCw,
 } from 'lucide-react';
 
-const ACADEMIC_YEARS = ['2025-2026', '2026-2027', '2027-2028'];
-const YEARS = ['I Year', 'II Year', 'III Year', 'IV Year'];
-const SEMESTERS = ['I Semester', 'II Semester'];
+const ACADEMIC_YEARS = ['2026-2027', '2027-2028', '2028-2029'];
+const YEARS = ['II Year', 'III Year', 'IV Year'];
+const SEMESTERS = ['Semester 1', 'Semester 2'];
 
 const SubjectManagement = () => {
   const [subjects, setSubjects] = useState([]);

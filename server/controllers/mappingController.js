@@ -273,6 +273,17 @@ exports.confirmMapping = async (req, res) => {
       });
     }
 
+    // STRICT 72-STUDENT LIMIT: Enforce at controller level before database write
+    if (cleanStudentList.length > 72) {
+      return res.status(422).json({
+        success: false,
+        code: 'MAPPING_CAPACITY_EXCEEDED',
+        message: `Faculty mapping cannot exceed 72 students. Section ${cleanSection} has ${cleanStudentList.length} students. Please split into multiple mappings or contact Admin for review.`,
+        studentCount: cleanStudentList.length,
+        maxAllowed: 72,
+      });
+    }
+
     // Check if mapping already exists for (subjectCode, section)
     const existing = await FacultyMapping.findOne({
       subjectCode: cleanSubCode,
@@ -1250,6 +1261,17 @@ exports.createMapping = async (req, res) => {
       a.registrationNumber.localeCompare(b.registrationNumber)
     );
 
+    // STRICT 72-STUDENT LIMIT: Enforce at controller level before database write
+    if (cleanStudents.length > 72) {
+      return res.status(422).json({
+        success: false,
+        code: 'MAPPING_CAPACITY_EXCEEDED',
+        message: `Faculty mapping cannot exceed 72 students. Section ${cleanSection} has ${cleanStudents.length} students. Please split into multiple mappings or contact Admin for review.`,
+        studentCount: cleanStudents.length,
+        maxAllowed: 72,
+      });
+    }
+
     // Check existing active mapping
     const existing = await FacultyMapping.findOne({
       subjectCode: cleanSubCode,
@@ -1475,6 +1497,69 @@ exports.updateMappingById = async (req, res) => {
     });
   } catch (error) {
     console.error('[Update Mapping Error]:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * @desc    Migration preview: Identify mappings where one faculty exceeds 72 students
+ * @route   GET /api/mappings/migration-preview
+ * @access  Private (Admin)
+ */
+exports.migrationPreview = async (req, res) => {
+  try {
+    const mappings = await FacultyMapping.find({ isCurrent: true, status: 'ACTIVE' })
+      .select('facultyId facultyName subjectName subjectCode section group academicYear semester studentCount students createdAt updatedAt')
+      .lean();
+
+    // Group by faculty to detect faculty with >72 total students across sections
+    const facultyMap = new Map();
+    const overLimitMappings = [];
+
+    for (const m of mappings) {
+      const count = m.studentCount || (m.students && m.students.length) || 0;
+      if (count > 72) {
+        overLimitMappings.push({
+          mappingId: m._id,
+          facultyName: m.facultyName,
+          subjectName: m.subjectName,
+          subjectCode: m.subjectCode,
+          group: m.group,
+          section: m.section,
+          academicYear: m.academicYear,
+          semester: m.semester,
+          studentCount: count,
+          issue: `Faculty ${m.facultyName} has ${count} students in Section ${m.section}, exceeding the 72-student limit.`,
+        });
+      }
+
+      // Aggregate per faculty for cross-section total
+      const key = `${m.facultyName}|${m.subjectName}|${m.academicYear}|${m.semester}`;
+      if (!facultyMap.has(key)) {
+        facultyMap.set(key, { facultyName: m.facultyName, subjectName: m.subjectName, academicYear: m.academicYear, semester: m.semester, sections: [], totalStudents: 0 });
+      }
+      const entry = facultyMap.get(key);
+      entry.sections.push({ section: m.section, studentCount: count });
+      entry.totalStudents += count;
+    }
+
+    const overLimitFaculties = Array.from(facultyMap.values()).filter((f) => f.totalStudents > 72);
+
+    res.status(200).json({
+      success: true,
+      summary: {
+        totalMappings: mappings.length,
+        overLimitMappingsCount: overLimitMappings.length,
+        overLimitFacultiesCount: overLimitFaculties.length,
+      },
+      overLimitMappings,
+      overLimitFaculties,
+      message: overLimitMappings.length > 0 || overLimitFaculties.length > 0
+        ? 'Incorrect mappings detected. Review and split before applying new structure.'
+        : 'No incorrect mappings found. All mappings comply with the 72-student limit.',
+    });
+  } catch (error) {
+    console.error('[Migration Preview Error]:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };

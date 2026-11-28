@@ -12,6 +12,7 @@ const Dashboard = lazy(() => import('./pages/admin/Dashboard'));
 const FacultyAssignments = lazy(() => import('./pages/admin/FacultyAssignments'));
 const FacultyManagement = lazy(() => import('./pages/admin/FacultyManagement'));
 const SubjectManagement = lazy(() => import('./pages/admin/SubjectManagement'));
+const MappingCreation = lazy(() => import('./pages/admin/MappingCreation'));
 const Examinations = lazy(() => import('./pages/admin/Examinations'));
 const Timetable = lazy(() => import('./pages/admin/Timetable'));
 const Students = lazy(() => import('./pages/admin/Students'));
@@ -121,6 +122,7 @@ function AppRoutes() {
         <Route path="dashboard" element={<Dashboard />} />
         <Route path="faculty" element={<FacultyManagement />} />
         <Route path="subjects" element={<SubjectManagement />} />
+        <Route path="mapping-creation" element={<MappingCreation />} />
         <Route path="assignments" element={<FacultyAssignments />} />
         <Route path="exams" element={<Examinations />} />
         <Route path="timetable" element={<Timetable />} />

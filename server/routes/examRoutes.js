@@ -18,6 +18,7 @@ const {
   resolveCentralizedMappings,
   createCentralizedExam,
   checkClassroomAvailability,
+  getEligibleMappings,
 } = require('../controllers/examController');
 const { protect, authorize } = require('../middleware/auth');
 
@@ -29,6 +30,7 @@ router.get('/section-roster', authorize('admin', 'faculty'), getSectionRoster);
 
 // Examination Mapping Resolution & Creation (Admin and Faculty scoped strictly to own mappings)
 router.get('/resolve-mappings', authorize('admin', 'faculty'), resolveCentralizedMappings);
+router.get('/eligible-mappings', authorize('admin', 'faculty'), getEligibleMappings);
 router.get('/check-availability', authorize('admin', 'faculty'), checkClassroomAvailability);
 router.post('/check-availability', authorize('admin', 'faculty'), checkClassroomAvailability);
 router.post('/create-centralized', authorize('admin', 'faculty'), createCentralizedExam);

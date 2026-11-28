@@ -3759,3 +3759,79 @@ exports.getSectionRoster = async (req, res) => {
     });
   }
 };
+
+/**
+ * @desc    Get eligible mappings for exam scheduling, grouped by subject
+ * @route   GET /api/exams/eligible-mappings
+ * @access  Private (Admin, Faculty)
+ */
+exports.getEligibleMappings = async (req, res) => {
+  try {
+    const { academicYear, semester, group, subjectCode, subjectName } = req.query;
+    const filter = { isCurrent: true, status: 'ACTIVE' };
+
+    if (academicYear && academicYear !== 'ALL') filter.academicYear = academicYear;
+    if (semester && semester !== 'ALL') filter.semester = semester;
+    if (group && group !== 'ALL') filter.group = group;
+    if (subjectCode && subjectCode.trim()) filter.subjectCode = subjectCode.trim().toUpperCase();
+    if (subjectName && subjectName.trim()) filter.subjectName = { $regex: new RegExp(`^${subjectName.trim()}$`, 'i') };
+
+    const mappings = await FacultyMapping.find(filter)
+      .select('facultyId facultyName subjectName subjectCode section group academicYear semester studentCount students mappingVersion')
+      .lean();
+
+    const scopedMappings = req.user && req.user.role === 'faculty'
+      ? mappings.filter((m) => {
+          if (m.facultyId && req.user._id && m.facultyId.toString() === req.user._id.toString()) return true;
+          return String(m.facultyName).trim().toLowerCase() === String(req.user.name || '').trim().toLowerCase();
+        })
+      : mappings;
+
+    // Group by subject (subjectCode + subjectName)
+    const subjectMap = new Map();
+    for (const m of scopedMappings) {
+      const key = `${m.subjectCode}|${m.subjectName}`;
+      if (!subjectMap.has(key)) {
+        subjectMap.set(key, {
+          subjectCode: m.subjectCode,
+          subjectName: m.subjectName,
+          academicYear: m.academicYear,
+          semester: m.semester,
+          group: m.group,
+          sections: [],
+          totalStudents: 0,
+          faculties: [],
+        });
+      }
+      const entry = subjectMap.get(key);
+      entry.sections.push({
+        mappingId: m._id,
+        section: m.section,
+        facultyName: m.facultyName,
+        facultyId: m.facultyId,
+        studentCount: m.studentCount || (m.students && m.students.length) || 0,
+      });
+      entry.totalStudents += m.studentCount || (m.students && m.students.length) || 0;
+      if (!entry.faculties.includes(m.facultyName)) entry.faculties.push(m.facultyName);
+    }
+
+    // Sort sections A1..A6 within each subject
+    subjectMap.forEach((entry) => {
+      entry.sections.sort((a, b) => a.section.localeCompare(b.section));
+    });
+
+    const subjects = Array.from(subjectMap.values()).sort((a, b) =>
+      String(a.subjectName || '').localeCompare(String(b.subjectName || ''))
+    );
+
+    res.status(200).json({
+      success: true,
+      count: subjects.length,
+      subjects,
+      message: `Found ${subjects.length} subject(s) with eligible mappings.`,
+    });
+  } catch (error) {
+    console.error('[Get Eligible Mappings Error]:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};

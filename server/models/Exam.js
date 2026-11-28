@@ -10,16 +10,22 @@ const examSchema = new mongoose.Schema({
   examType: {
     type: String,
     enum: EXAM_TYPES,
-    default: 'UNIT 1',
+    required: [true, 'Examination unit (UNIT 1-5) is mandatory'],
     trim: true,
     uppercase: true,
     index: true,
+  },
+  subjectId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Subject',
   },
   academicYear: {
     type: String,
     required: [true, 'Academic year is required'],
     trim: true,
+    enum: ['2nd Year', '3rd Year', '4th Year', '2026-2027'],
     default: '2026-2027',
+    index: true,
   },
   department: {
     type: String,
@@ -29,13 +35,16 @@ const examSchema = new mongoose.Schema({
   },
   year: {
     type: String,
+    enum: ['II Year', 'III Year', 'IV Year'],
     required: [true, 'Year is required'],
     default: 'IV Year',
   },
   semester: {
     type: String,
+    enum: ['Semester 1', 'Semester 2', 'I Semester', 'II Semester'],
     required: [true, 'Semester is required'],
-    default: 'I Semester',
+    default: 'Semester 1',
+    index: true,
   },
   section: {
     type: String,
