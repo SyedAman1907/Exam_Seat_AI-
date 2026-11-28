@@ -7,11 +7,8 @@ import {
 } from '../utils/dateTime';
 
 /**
- * Clean 12-hour digital IST time picker:
+ * Clean 12-hour digital IST time picker (h-10 unified height):
  *   [ hh ] : [ mm ]   [ AM | PM ]
- * - Direct editable numeric hour (01-12) and minute (00-59) with arrow stepping
- * - Single unambiguous AM/PM segmented toggle (no duplicate browser-native AM/PM)
- * - Syncs cleanly with parent session changes & modal edits
  */
 const TimeSelect12h = ({
   label,
@@ -127,15 +124,15 @@ const TimeSelect12h = ({
       {label && (
         <label
           htmlFor={`${idPrefix}-hour`}
-          className="block text-[11px] font-bold text-navy-800 mb-1"
+          className="block text-xs font-bold text-[#172033] dark:text-[#F8FAFC] mb-1.5"
         >
           {label} {required && <span className="text-red-500">*</span>}
         </label>
       )}
-      <div className="flex items-center gap-1.5 flex-wrap sm:flex-nowrap">
-        {/* Clean Digital [HH : MM] Input Group */}
-        <div className="flex items-center px-2 py-1 border border-slate-300 rounded-lg bg-white focus-within:ring-1 focus-within:ring-primary focus-within:border-primary shadow-2xs">
-          <Clock size={13} className="text-slate-400 mr-1.5 flex-shrink-0" aria-hidden="true" />
+      <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+        {/* Clean Digital [HH : MM] Input Group matching h-10 */}
+        <div className="h-10 flex items-center px-2.5 border border-[#E5E7EB] dark:border-[#30384A] rounded-[10px] bg-white dark:bg-[#141926] focus-within:ring-2 focus-within:ring-primary/25 focus-within:border-primary shadow-2xs">
+          <Clock size={14} className="text-[#64748B] dark:text-[#A1A1AA] mr-1.5 flex-shrink-0" aria-hidden="true" />
           <input
             id={`${idPrefix}-hour`}
             type="text"
@@ -162,9 +159,9 @@ const TimeSelect12h = ({
               }
             }}
             aria-label={`${label || 'Time'} Hour (01-12)`}
-            className="w-7 text-center text-xs font-bold font-mono text-navy-800 bg-transparent focus:outline-none tabular-nums"
+            className="w-7 text-center text-xs font-bold font-mono text-[#172033] dark:text-[#F8FAFC] bg-transparent focus:outline-none tabular-nums"
           />
-          <span className="font-bold text-slate-400 text-xs px-0.5 select-none">:</span>
+          <span className="font-bold text-[#64748B] dark:text-[#A1A1AA] text-xs px-0.5 select-none">:</span>
           <input
             id={`${idPrefix}-minute`}
             type="text"
@@ -191,13 +188,13 @@ const TimeSelect12h = ({
               }
             }}
             aria-label={`${label || 'Time'} Minute (00-59)`}
-            className="w-7 text-center text-xs font-bold font-mono text-navy-800 bg-transparent focus:outline-none tabular-nums"
+            className="w-7 text-center text-xs font-bold font-mono text-[#172033] dark:text-[#F8FAFC] bg-transparent focus:outline-none tabular-nums"
           />
         </div>
 
-        {/* Single AM/PM Toggle */}
+        {/* Single AM/PM Toggle matching h-10 */}
         <div
-          className="flex rounded-lg border border-slate-300 overflow-hidden flex-shrink-0"
+          className="h-10 inline-flex rounded-[10px] border border-[#E5E7EB] dark:border-[#30384A] overflow-hidden flex-shrink-0"
           role="group"
           aria-label={`${label || 'Time'} AM/PM`}
         >
@@ -205,10 +202,10 @@ const TimeSelect12h = ({
             type="button"
             onClick={() => handlePeriodToggle('AM')}
             aria-pressed={parts.period === 'AM'}
-            className={`px-2.5 py-1.5 text-[11px] font-bold transition-colors cursor-pointer ${
+            className={`px-3 text-xs font-bold transition-colors cursor-pointer ${
               parts.period === 'AM'
                 ? 'bg-primary text-white'
-                : 'bg-white text-slate-600 hover:bg-slate-50'
+                : 'bg-white dark:bg-[#141926] text-[#64748B] dark:text-[#A1A1AA] hover:bg-[#F8DCEB]/50 dark:hover:bg-white/5'
             }`}
           >
             AM
@@ -217,10 +214,10 @@ const TimeSelect12h = ({
             type="button"
             onClick={() => handlePeriodToggle('PM')}
             aria-pressed={parts.period === 'PM'}
-            className={`px-2.5 py-1.5 text-[11px] font-bold border-l border-slate-300 transition-colors cursor-pointer ${
+            className={`px-3 text-xs font-bold border-l border-[#E5E7EB] dark:border-[#30384A] transition-colors cursor-pointer ${
               parts.period === 'PM'
                 ? 'bg-primary text-white'
-                : 'bg-white text-slate-600 hover:bg-slate-50'
+                : 'bg-white dark:bg-[#141926] text-[#64748B] dark:text-[#A1A1AA] hover:bg-[#F8DCEB]/50 dark:hover:bg-white/5'
             }`}
           >
             PM
@@ -228,18 +225,18 @@ const TimeSelect12h = ({
         </div>
       </div>
 
-      <div className="mt-1 flex items-center justify-between text-[10px]">
-        <span className="font-mono font-semibold text-slate-600">
-          Selected: <strong className="text-navy-800">{canonicalDisplay} IST</strong>
+      <div className="mt-1 flex items-center justify-between text-[11px]">
+        <span className="font-mono font-medium text-[#64748B] dark:text-[#A1A1AA]">
+          Selected: <strong className="text-[#172033] dark:text-[#F8FAFC]">{canonicalDisplay} IST</strong>
         </span>
       </div>
       {hasPmMismatch && (
-        <p className="text-[10px] text-amber-700 font-semibold mt-0.5">
+        <p className="text-[11px] text-amber-700 dark:text-amber-300 font-semibold mt-0.5">
           Afternoon (PM) session selected — confirm PM timing.
         </p>
       )}
       {hasAmStartMismatch && (
-        <p className="text-[10px] text-amber-700 font-semibold mt-0.5">
+        <p className="text-[11px] text-amber-700 dark:text-amber-300 font-semibold mt-0.5">
           Morning (AM) start times must be before 12:00 PM.
         </p>
       )}

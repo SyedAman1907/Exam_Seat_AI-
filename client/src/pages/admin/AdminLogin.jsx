@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
+import ThemeToggle from '../../components/ThemeToggle';
 import { Lock, Mail, AlertCircle, ArrowRight, ShieldCheck, GraduationCap, Eye, EyeOff } from 'lucide-react';
 
 const AdminLogin = () => {
@@ -44,7 +45,7 @@ const AdminLogin = () => {
         if (requestedFrom) {
           if (role === 'admin') finalTarget = requestedFrom;
           else if (role === 'faculty' && requestedFrom.startsWith('/faculty')) finalTarget = requestedFrom;
-          else if (role === 'stud ent' && requestedFrom.startsWith('/student')) finalTarget = requestedFrom;
+          else if (role === 'student' && requestedFrom.startsWith('/student')) finalTarget = requestedFrom;
         }
         navigate(finalTarget, { replace: true });
       } else {
@@ -71,7 +72,11 @@ const AdminLogin = () => {
   };
 
   return (
-    <div className="min-h-screen w-full bg-[#F5F7FA] flex flex-col justify-between px-4 py-8 sm:px-6 lg:px-8 font-sans">
+    <div className="min-h-screen w-full bg-[#F7F7FB] dark:bg-[#10131C] flex flex-col justify-between px-4 py-6 sm:px-6 lg:px-8 font-sans transition-colors">
+      <div className="w-full max-w-md mx-auto flex justify-end">
+        <ThemeToggle compact />
+      </div>
+
       <div className="flex-1 flex flex-col justify-center w-full max-w-md mx-auto">
         {/* Institutional Header */}
         <header className="text-center mb-6">
@@ -79,45 +84,45 @@ const AdminLogin = () => {
             <img
               src="/rgmcet-logo.jpg"
               alt="RGMCET Official Crest"
-              className="w-16 h-16 object-contain"
+              className="w-16 h-16 object-contain rounded-xl bg-white p-1 border border-[#E5E7EB] dark:border-[#30384A]"
             />
           </div>
-          <h1 className="mt-3 text-sm sm:text-base font-bold tracking-tight text-navy-800 uppercase">
+          <h1 className="mt-3 text-sm sm:text-base font-bold tracking-tight text-[#172033] dark:text-[#F8FAFC] uppercase">
             RAJEEV GANDHI MEMORIAL COLLEGE OF ENGINEERING AND TECHNOLOGY
           </h1>
           <p className="mt-0.5 text-xs font-bold text-primary tracking-wide uppercase">
             Department of Computer Science and Engineering
           </p>
-          <p className="text-xs text-slate-600 mt-1">
+          <p className="text-xs text-[#64748B] dark:text-[#A1A1AA] mt-1">
             ExamSeat AI — Admin &amp; Faculty Examination Portal
           </p>
         </header>
 
         {/* Sign In Surface */}
-        <main className="bg-white py-7 px-5 sm:px-8 border border-slate-200 rounded-xl shadow-xs">
-          <div className="border-b border-slate-200 pb-4 mb-5">
-            <h2 className="text-base font-bold text-navy-800">Admin &amp; Faculty Sign In</h2>
-            <p className="text-xs text-slate-600 mt-0.5">
+        <main className="es-glass-card py-7 px-5 sm:px-8">
+          <div className="border-b border-[#E5E7EB] dark:border-[#30384A] pb-4 mb-5">
+            <h2 className="text-base font-bold text-[#172033] dark:text-[#F8FAFC]">Admin &amp; Faculty Sign In</h2>
+            <p className="text-xs text-[#64748B] dark:text-[#A1A1AA] mt-0.5">
               Sign in with your authorized Admin or Faculty credentials. Students sign in via Registration Number on the Student Portal.
             </p>
           </div>
 
           {isExpired && !error && (
-            <div role="status" className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 flex items-center">
-              <AlertCircle size={16} className="mr-2 flex-shrink-0 text-amber-700" />
+            <div role="status" className="mb-4 p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-xl text-xs text-amber-900 dark:text-amber-200 flex items-center">
+              <AlertCircle size={16} className="mr-2 flex-shrink-0 text-amber-700 dark:text-amber-400" />
               <span>Your previous session has expired. Please sign in again.</span>
             </div>
           )}
 
           {error && (
-            <div role="alert" className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-800 flex items-center font-medium">
-              <AlertCircle size={16} className="mr-2 flex-shrink-0 text-red-600" />
+            <div role="alert" className="mb-4 p-3 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 rounded-xl text-xs text-red-800 dark:text-red-200 flex items-center font-medium">
+              <AlertCircle size={16} className="mr-2 flex-shrink-0 text-red-600 dark:text-red-400" />
               <span>{error}</span>
             </div>
           )}
 
           {forgotSent && (
-            <div role="status" className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-900 flex items-center">
+            <div role="status" className="mb-4 p-3 bg-[#F8DCEB]/70 dark:bg-[#F472B6]/10 border border-primary/30 rounded-xl text-xs text-[#172033] dark:text-[#F8FAFC] flex items-center">
               <ShieldCheck size={16} className="mr-2 flex-shrink-0 text-primary" />
               <span>Password reset requests are handled by the Examination Cell Controller.</span>
             </div>
@@ -125,11 +130,11 @@ const AdminLogin = () => {
 
           <form className="space-y-4" onSubmit={handleSubmit}>
             <div>
-              <label htmlFor="staff-email" className="block text-xs font-semibold text-navy-800 mb-1.5">
+              <label htmlFor="staff-email" className="block text-xs font-semibold text-[#172033] dark:text-[#F8FAFC] mb-1.5">
                 Institutional Email or Username
               </label>
               <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-[#64748B] dark:text-[#A1A1AA]">
                   <Mail size={16} aria-hidden="true" />
                 </div>
                 <input
@@ -141,14 +146,14 @@ const AdminLogin = () => {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="name@rgmcet.edu.in"
-                  className="block w-full pl-9 pr-3 py-2.5 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary text-navy-800 bg-white placeholder:text-slate-500"
+                  className="es-input pl-9"
                 />
               </div>
             </div>
 
             <div>
               <div className="flex items-center justify-between mb-1.5">
-                <label htmlFor="staff-password" className="block text-xs font-semibold text-navy-800">
+                <label htmlFor="staff-password" className="block text-xs font-semibold text-[#172033] dark:text-[#F8FAFC]">
                   Password
                 </label>
                 <button
@@ -160,7 +165,7 @@ const AdminLogin = () => {
                 </button>
               </div>
               <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-[#64748B] dark:text-[#A1A1AA]">
                   <Lock size={16} aria-hidden="true" />
                 </div>
                 <input
@@ -172,13 +177,13 @@ const AdminLogin = () => {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Enter your password"
-                  className="block w-full pl-9 pr-10 py-2.5 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary text-navy-800 bg-white placeholder:text-slate-500"
+                  className="es-input pl-9 pr-10"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword((prev) => !prev)}
                   aria-label={showPassword ? 'Hide password' : 'Show password'}
-                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-500 hover:text-navy-800 cursor-pointer"
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-[#64748B] dark:text-[#A1A1AA] hover:text-primary cursor-pointer"
                 >
                   {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
@@ -188,14 +193,14 @@ const AdminLogin = () => {
             <button
               type="submit"
               disabled={loading}
-              className="es-btn-primary w-full py-2.5 px-4 text-sm shadow-xs"
+              className="es-btn-primary w-full"
             >
               <span>{loading ? 'Signing in...' : 'Sign In to Exam Portal'}</span>
               {!loading && <ArrowRight size={15} className="ml-2" aria-hidden="true" />}
             </button>
           </form>
 
-          <div className="mt-5 pt-4 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-xs text-slate-600">
+          <div className="mt-5 pt-4 border-t border-[#E5E7EB] dark:border-[#30384A] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-xs text-[#64748B] dark:text-[#A1A1AA]">
             <span>Authorized @rgmcet.edu.in accounts only.</span>
             <Link
               to="/student/seat-finder"
@@ -208,7 +213,7 @@ const AdminLogin = () => {
         </main>
       </div>
 
-      <footer className="mt-8 text-center text-xs text-slate-600">
+      <footer className="mt-8 text-center text-xs text-[#64748B] dark:text-[#A1A1AA]">
         RGMCET (Autonomous) • Department of CSE • ExamSeat AI
       </footer>
     </div>

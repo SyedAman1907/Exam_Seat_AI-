@@ -8,29 +8,26 @@ import {
   AlertCircle,
   FileText,
   Trash2,
-  Layers,
   ShieldCheck,
   RefreshCw,
   Search,
   Eye,
   X,
-  Sparkles,
-  Info,
   UserCheck,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 
+const PAGE_SIZE = 10;
+
 const FacultyAssignments = () => {
-  // Permanent mappings list
   const [mappings, setMappings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterGroup, setFilterGroup] = useState('ALL');
   const [filterSection, setFilterSection] = useState('ALL');
+  const [page, setPage] = useState(1);
 
-  // Upload workflow mode: 'multi' (auto-extract multi-subject roster) or 'single'
-  const [uploadMode, setUploadMode] = useState('multi');
-
-  // Single form states
+  // Single Subject & Single Section mapping upload state
   const [facultyName, setFacultyName] = useState('');
   const [facultyIdCode, setFacultyIdCode] = useState('');
   const [subjectName, setSubjectName] = useState('');
@@ -40,19 +37,25 @@ const FacultyAssignments = () => {
   const [selectedFile, setSelectedFile] = useState(null);
   const [replaceExisting, setReplaceExisting] = useState(true);
   const [inconsistentNames, setInconsistentNames] = useState([]);
-  const [inspectMultiIndex, setInspectMultiIndex] = useState(null);
 
-  // Preview & Background Job states
   const [uploading, setUploading] = useState(false);
   const [previewError, setPreviewError] = useState('');
   const [refreshWarning, setRefreshWarning] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
   const [confirming, setConfirming] = useState(false);
   const [activeJob, setActiveJob] = useState(null);
-  const [retryingJob, setRetryingJob] = useState(false);
   const jobPollAbortRef = useRef(null);
 
+  const [previewStudents, setPreviewStudents] = useState([]);
+  const [inspectModalRoster, setInspectModalRoster] = useState(null);
+  const [rosterSearchTerm, setRosterSearchTerm] = useState('');
+  const [dbSubjects, setDbSubjects] = useState([]);
+
+  const sectionsList = ['A1', 'A2', 'A3', 'A4', 'A5', 'A6'];
+
   useEffect(() => {
+    fetchMappings();
+    fetchSubjects();
     return () => {
       if (jobPollAbortRef.current) {
         jobPollAbortRef.current.abort();
@@ -60,39 +63,10 @@ const FacultyAssignments = () => {
     };
   }, []);
 
-  // Single roster preview
-  const [previewStudents, setPreviewStudents] = useState([]);
-
-  // Multi-roster preview
-  const [isMultiRoster, setIsMultiRoster] = useState(false);
-  const [multiSummary, setMultiSummary] = useState(null);
-  const [multiMappings, setMultiMappings] = useState([]);
-
-  // Modal for inspecting a specific roster
-  const [inspectModalRoster, setInspectModalRoster] = useState(null);
-  const [rosterSearchTerm, setRosterSearchTerm] = useState('');
-  const [dbSubjects, setDbSubjects] = useState([]);
-
-  // Timetable subject presets (fallback)
-  const defaultSubjectPresets = [
-    { name: 'Object Oriented Analysis and Design', code: '20A05504T' },
-    { name: 'Automata Theory and Compiler Design', code: '20A05501T' },
-    { name: 'Artificial Intelligence', code: '20A05502S' },
-    { name: 'Introduction to Quantum Technologies and Applications', code: '20A05505T' },
-    { name: 'Computer Networks', code: '20A05502T' },
-  ];
-
-  const sectionsList = ['A1', 'A2', 'A3', 'A4', 'A5', 'A6'];
-
-  useEffect(() => {
-    fetchMappings();
-    fetchSubjects();
-  }, []);
-
   const fetchSubjects = async () => {
     try {
       const res = await api.get('/subjects');
-      if (res.data.success && res.data.data) {
+      if (res.data?.success && Array.isArray(res.data.data)) {
         setDbSubjects(res.data.data);
       }
     } catch (err) {
@@ -101,15 +75,27 @@ const FacultyAssignments = () => {
   };
 
   const subjectPresets = useMemo(() => {
-    if (dbSubjects && dbSubjects.length > 0) {
-      return dbSubjects.map((s) => ({
-        name: s.subjectName,
-        code: s.subjectCode,
-        abbreviation: s.abbreviation,
-      }));
-    }
-    return defaultSubjectPresets;
-  }, [dbSubjects]);
+    const map = new Map();
+    dbSubjects.forEach((s) => {
+      const key = String(s.subjectCode || s.subjectName || '').trim().toUpperCase();
+      if (key && !map.has(key)) {
+        map.set(key, {
+          name: s.subjectName,
+          code: s.subjectCode,
+        });
+      }
+    });
+    mappings.forEach((m) => {
+      const key = String(m.subjectCode || m.subjectName || '').trim().toUpperCase();
+      if (key && !map.has(key)) {
+        map.set(key, {
+          name: m.subjectName,
+          code: m.subjectCode,
+        });
+      }
+    });
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [dbSubjects, mappings]);
 
   const fetchMappings = async ({ preserveOnFailure = false } = {}) => {
     try {
@@ -123,14 +109,14 @@ const FacultyAssignments = () => {
         return true;
       }
       if (preserveOnFailure) {
-        setRefreshWarning(res.data?.message || 'Mapping was saved, but refreshing the active mappings list returned an unexpected response.');
+        setRefreshWarning(res.data?.message || 'Mapping saved, but refreshing the table returned an unexpected response.');
       }
       return false;
     } catch (err) {
       console.error('Failed to load faculty mappings:', err);
       if (preserveOnFailure) {
         setRefreshWarning(
-          `Mapping operation succeeded, but refreshing the mappings table failed (${formatApiError(err, 'Network error')}). Click Refresh to reload.`
+          `Mapping operation succeeded, but refreshing the mappings table failed (${formatApiError(err, 'Network error')}).`
         );
       }
       return false;
@@ -172,63 +158,61 @@ const FacultyAssignments = () => {
       await new Promise((resolve) => setTimeout(resolve, 750));
     }
 
-    throw new Error('Background mapping job is still processing. Please check Refresh shortly.');
+    throw new Error('Background mapping job is still processing. Please click Refresh shortly.');
   };
 
-  const handleSubjectSelect = (preset) => {
-    setSubjectName(preset.name);
-    setSubjectCode(preset.code);
+  const handleSubjectDropdown = (e) => {
+    const val = e.target.value;
+    if (!val) {
+      setSubjectName('');
+      setSubjectCode('');
+      return;
+    }
+    const found = subjectPresets.find((p) => p.code === val || p.name === val);
+    if (found) {
+      setSubjectName(found.name);
+      setSubjectCode(found.code);
+    }
   };
 
   const handleFileChange = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      const lower = file.name.toLowerCase();
-      const allowedExt = ['.pdf', '.xlsx', '.xls', '.csv'].some((ext) => lower.endsWith(ext));
-      if (!allowedExt) {
-        setPreviewError('Please upload a valid PDF, Excel (.xlsx/.xls), or CSV student roster document.');
-        setSelectedFile(null);
-        return;
-      }
-      if (file.size > 40 * 1024 * 1024) {
-        setPreviewError('The selected file exceeds the 40MB limit. Please upload a smaller file.');
-        setSelectedFile(null);
-        return;
-      }
-      setSelectedFile(file);
-      setPreviewError('');
-      setPreviewStudents([]);
-      setInconsistentNames([]);
-      setIsMultiRoster(false);
-      setMultiMappings([]);
-      setMultiSummary(null);
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const lower = file.name.toLowerCase();
+    const allowedExt = ['.pdf', '.xlsx', '.xls', '.csv'].some((ext) => lower.endsWith(ext));
+    if (!allowedExt) {
+      setPreviewError('Please upload a valid PDF, Excel (.xlsx/.xls), or CSV student roster file.');
+      setSelectedFile(null);
+      return;
     }
+    if (file.size > 40 * 1024 * 1024) {
+      setPreviewError('The selected file exceeds the 40MB limit.');
+      setSelectedFile(null);
+      return;
+    }
+    setSelectedFile(file);
+    setPreviewError('');
+    setPreviewStudents([]);
+    setInconsistentNames([]);
   };
 
   const handleUploadAndPreview = async (e) => {
     e.preventDefault();
     if (!selectedFile) {
-      setPreviewError('Please select a student roster PDF, Excel, or CSV file to upload.');
+      setPreviewError('Please select a roster file (PDF, Excel, or CSV).');
       return;
     }
-
-    if (uploadMode === 'single') {
-      if (!facultyName.trim()) {
-        setPreviewError('Faculty Name is required.');
-        return;
-      }
-      if (!subjectName.trim()) {
-        setPreviewError('Subject Name is required.');
-        return;
-      }
-      if (!subjectCode.trim()) {
-        setPreviewError('Subject Code is required.');
-        return;
-      }
-      if (!section) {
-        setPreviewError('Section (A1–A6) is required.');
-        return;
-      }
+    if (!facultyName.trim()) {
+      setPreviewError('Faculty Name is required.');
+      return;
+    }
+    if (!subjectName.trim() || !subjectCode.trim()) {
+      setPreviewError('Subject Name and Subject Code are required.');
+      return;
+    }
+    if (!section) {
+      setPreviewError('Section (A1–A6) is required.');
+      return;
     }
 
     try {
@@ -241,17 +225,15 @@ const FacultyAssignments = () => {
 
       const formData = new FormData();
       formData.append('file', selectedFile);
-      formData.append('uploadMode', uploadMode);
-      if (uploadMode === 'single') {
-        formData.append('facultyName', facultyName.trim());
-        if (facultyIdCode.trim()) {
-          formData.append('facultyIdCode', facultyIdCode.trim().toUpperCase());
-        }
-        formData.append('subjectName', subjectName.trim());
-        formData.append('subjectCode', subjectCode.trim());
-        formData.append('section', section.trim().toUpperCase());
-        formData.append('group', group);
+      formData.append('uploadMode', 'single');
+      formData.append('facultyName', facultyName.trim());
+      if (facultyIdCode.trim()) {
+        formData.append('facultyIdCode', facultyIdCode.trim().toUpperCase());
       }
+      formData.append('subjectName', subjectName.trim());
+      formData.append('subjectCode', subjectCode.trim().toUpperCase());
+      formData.append('section', section.trim().toUpperCase());
+      formData.append('group', group);
 
       const startRes = await api.post('/mappings/jobs/upload-preview', formData, {
         timeout: API_TIMEOUTS.PDF_UPLOAD,
@@ -262,13 +244,11 @@ const FacultyAssignments = () => {
         setActiveJob(startRes.data.data);
         const completedJob = await pollJobUntilTerminal(startRes.data.data.jobId);
         if (completedJob.status === 'FAILED') {
-          setPreviewError(completedJob.errorMessage || 'Failed to extract student rosters from uploaded file.');
+          setPreviewError(completedJob.errorMessage || 'Failed to extract student roster from uploaded file.');
           return;
         }
         extractionData = {
           success: true,
-          isMultiRoster: completedJob.isMultiRoster,
-          summary: completedJob.summary,
           inconsistentNames: completedJob.summary?.inconsistentNames || [],
           mappings: completedJob.previewMappings || completedJob.mappings || [],
           students: (completedJob.previewMappings || []).flatMap((m) => m.students || []),
@@ -279,46 +259,34 @@ const FacultyAssignments = () => {
         const mismatches = extractionData.inconsistentNames || extractionData.summary?.inconsistentNames || [];
         setInconsistentNames(Array.isArray(mismatches) ? mismatches : []);
 
-        if (extractionData.isMultiRoster && extractionData.mappings && extractionData.mappings.length > 0) {
-          setIsMultiRoster(true);
-          setMultiMappings(extractionData.mappings);
-          setMultiSummary(extractionData.summary);
-          setPreviewStudents([]);
-        } else {
-          setIsMultiRoster(false);
-          const extracted =
-            extractionData.students ||
-            extractionData.data?.students ||
-            (extractionData.mappings?.[0]?.students) ||
-            (extractionData.data?.records || []).map((r, idx) => ({
-              sNo: r.serialNumber || idx + 1,
-              registrationNumber: r.rollNumber,
-              studentName: r.studentName,
-            }));
+        const extracted =
+          extractionData.students ||
+          extractionData.data?.students ||
+          extractionData.mappings?.[0]?.students ||
+          (extractionData.data?.records || []).map((r, idx) => ({
+            sNo: r.serialNumber || idx + 1,
+            registrationNumber: r.rollNumber,
+            studentName: r.studentName,
+          }));
 
-          if (extracted && extracted.length > 0) {
-            setPreviewStudents(extracted);
-          } else {
-            setPreviewError(
-              'No valid student records could be extracted from this file. Please verify that it contains valid registration numbers and student names.'
-            );
-          }
+        if (extracted && extracted.length > 0) {
+          setPreviewStudents(extracted);
+        } else {
+          setPreviewError('No valid student records could be extracted from this file.');
         }
       } else {
-        setPreviewError(extractionData?.message || 'Failed to extract student rosters.');
+        setPreviewError(extractionData?.message || 'Failed to extract student roster.');
       }
     } catch (err) {
       if (axios.isCancel(err) || err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') {
         return;
       }
-      console.error('[FacultyAssignments] Upload preview failed:', err);
       setPreviewError(formatApiError(err, 'Failed to extract students from file.'));
     } finally {
       setUploading(false);
     }
   };
 
-  // Update preview student name inline (for resolving inconsistent names before save)
   const handleUpdatePreviewStudentName = (index, newName) => {
     setPreviewStudents((prev) => {
       const copy = [...prev];
@@ -327,39 +295,13 @@ const FacultyAssignments = () => {
     });
   };
 
-  const handleUpdateInspectModalStudentName = (regNo, newName) => {
-    if (inspectMultiIndex === null) return;
-    setMultiMappings((prev) => {
-      const copy = [...prev];
-      const target = copy[inspectMultiIndex];
-      if (!target) return prev;
-      const updatedStudents = (target.students || []).map((st) =>
-        st.registrationNumber === regNo ? { ...st, studentName: newName, name: newName } : st
-      );
-      copy[inspectMultiIndex] = { ...target, students: updatedStudents };
-      setInspectModalRoster(copy[inspectMultiIndex]);
-      return copy;
-    });
-  };
-
-  // Update multi mapping row inline
-  const handleUpdateMultiMapping = (index, field, value) => {
-    setMultiMappings((prev) => {
-      const copy = [...prev];
-      copy[index] = { ...copy[index], [field]: value };
-      return copy;
-    });
-  };
-
-  // Confirm single mapping
   const handleConfirmSingleMapping = async () => {
-    if (!facultyName.trim() || !subjectName.trim() || !section) {
-      setPreviewError('Faculty Name, Subject, and Section are mandatory.');
+    if (!facultyName.trim() || !subjectName.trim() || !subjectCode.trim() || !section) {
+      setPreviewError('Faculty Name, Subject Name, Subject Code, and Section are required.');
       return;
     }
-
     if (previewStudents.length === 0) {
-      setPreviewError('Please preview and verify the student roster before confirming.');
+      setPreviewError('Preview the student roster before saving.');
       return;
     }
 
@@ -373,26 +315,26 @@ const FacultyAssignments = () => {
         facultyName: facultyName.trim(),
         facultyIdCode: facultyIdCode.trim().toUpperCase(),
         subjectName: subjectName.trim(),
-        subjectCode: subjectCode.trim() || 'SUB-CODE',
+        subjectCode: subjectCode.trim().toUpperCase(),
         section: section.trim().toUpperCase(),
         group: group || 'Group A',
         replaceExisting,
         students: previewStudents.map((s, idx) => ({
           sNo: s.sNo || idx + 1,
           registrationNumber: s.registrationNumber,
-          studentName: s.studentName,
+          studentName: s.studentName || s.name,
         })),
       };
 
       const res = await api.post('/mappings/confirm', payload, { timeout: API_TIMEOUTS.HEAVY_WRITE });
-
       if (res.data?.success) {
         savedSingle = true;
         setSuccessMessage(
-          `Successfully permanently mapped ${previewStudents.length} students to ${subjectName} (${section}) under ${facultyName}. These students will now load automatically for examinations.`
+          `Saved ${previewStudents.length} students for ${subjectName} (${subjectCode}) • Section ${section}.`
         );
         setPreviewStudents([]);
         setSelectedFile(null);
+        setActiveJob(null);
       } else {
         setPreviewError(res.data?.message || 'Failed to confirm faculty mapping.');
       }
@@ -407,1026 +349,567 @@ const FacultyAssignments = () => {
     }
   };
 
-  const applyCompletedBatchJobResult = (job) => {
-    const savedCount = job.savedMappings?.length || 0;
-    const failedCount = job.failedItems?.length || 0;
-
-    if (job.status === 'COMPLETED') {
-      setSuccessMessage(
-        `Successfully saved ${savedCount} independent subject-wise mappings (${job.totalEnrollments} enrollments across ${job.uniqueStudents} unique students) into MongoDB!`
-      );
-      setIsMultiRoster(false);
-      setMultiMappings([]);
-      setMultiSummary(null);
-      setSelectedFile(null);
-      return true;
-    }
-
-    if (job.status === 'PARTIAL_FAILED') {
-      setSuccessMessage(
-        `Saved ${savedCount} verified mapping(s) safely (${job.totalEnrollments} enrollments). ${failedCount} mapping(s) require attention and can be retried below without duplicating saved records.`
-      );
-      setPreviewError(
-        job.failedItems
-          .slice(0, 5)
-          .map((f) => `${f.subjectCode || f.subjectName} (${f.section || '?'}): ${f.error}`)
-          .join('\n')
-      );
-      return savedCount > 0;
-    }
-
-    setPreviewError(
-      job.errorMessage ||
-      (failedCount > 0
-        ? job.failedItems
-          .slice(0, 5)
-          .map((f) => `${f.subjectCode || f.subjectName} (${f.section || '?'}): ${f.error}`)
-          .join('\n')
-        : 'Failed to save batch mappings.')
-    );
-    return false;
-  };
-
-  // Confirm batch multi mappings using background job workflow
-  const handleConfirmBatchMappings = async () => {
-    if (multiMappings.length === 0) {
-      setPreviewError('No mappings to confirm.');
-      return;
-    }
-
-    let shouldRefresh = false;
-    try {
-      setConfirming(true);
-      setPreviewError('');
-      setRefreshWarning('');
-
-      const payload = {
-        mappings: multiMappings,
-        replaceExisting,
-        sourceFileName: selectedFile ? selectedFile.name : 'Roster.pdf',
-      };
-
-      const startRes = await api.post('/mappings/jobs/confirm-batch', payload, {
-        timeout: API_TIMEOUTS.DEFAULT,
-      });
-
-      if (startRes.data?.success && startRes.data?.data?.jobId) {
-        setActiveJob(startRes.data.data);
-        const completedJob = await pollJobUntilTerminal(startRes.data.data.jobId);
-        shouldRefresh = applyCompletedBatchJobResult(completedJob);
-      } else {
-        setPreviewError(startRes.data?.message || 'Failed to queue batch confirmation job.');
-      }
-    } catch (err) {
-      if (axios.isCancel(err) || err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') {
-        return;
-      }
-      const errList = err.response?.data?.errors;
-      const errMsg = errList && Array.isArray(errList)
-        ? `${err.response?.data?.message || 'Validation failed'}:\n${errList.slice(0, 5).join('\n')}`
-        : formatApiError(err, 'Failed to confirm batch mappings.');
-      setPreviewError(errMsg);
-    } finally {
-      setConfirming(false);
-    }
-
-    if (shouldRefresh) {
-      await fetchMappings({ preserveOnFailure: true });
-    }
-  };
-
-  const handleRetryFailedJob = async () => {
-    if (!activeJob?.jobId || retryingJob) return;
-    let shouldRefresh = false;
-    try {
-      setRetryingJob(true);
-      setPreviewError('');
-      setRefreshWarning('');
-      const res = await api.post(`/mappings/jobs/${activeJob.jobId}/retry`, {}, {
-        timeout: API_TIMEOUTS.DEFAULT,
-      });
-      if (res.data?.success && res.data?.data?.jobId) {
-        setActiveJob(res.data.data);
-        const completedJob = await pollJobUntilTerminal(res.data.data.jobId);
-        shouldRefresh = applyCompletedBatchJobResult(completedJob);
-      }
-    } catch (err) {
-      setPreviewError(formatApiError(err, 'Failed to retry failed mappings.'));
-    } finally {
-      setRetryingJob(false);
-    }
-    if (shouldRefresh) {
-      await fetchMappings({ preserveOnFailure: true });
-    }
-  };
-
   const handleDeleteMapping = async (id, title) => {
-    if (window.confirm(`Are you sure you want to deactivate permanent mapping for ${title}?`)) {
-      try {
-        await api.delete(`/mappings/${id}`);
-        await fetchMappings();
-      } catch (err) {
-        alert(err.response?.data?.message || 'Failed to delete mapping.');
-      }
+    if (!window.confirm(`Deactivate permanent mapping for ${title}?`)) return;
+    try {
+      await api.delete(`/mappings/${id}`);
+      await fetchMappings();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Failed to deactivate mapping.');
     }
   };
 
   const deferredSearchTerm = useDeferredValue(searchTerm);
 
-  // Filtered active mappings
   const filteredMappings = useMemo(() => {
-    const q = deferredSearchTerm.toLowerCase();
+    const q = deferredSearchTerm.toLowerCase().trim();
     return mappings.filter((m) => {
       const matchSearch =
         !q ||
-        m.facultyName.toLowerCase().includes(q) ||
-        m.subjectName.toLowerCase().includes(q) ||
-        m.subjectCode.toLowerCase().includes(q) ||
-        m.section.toLowerCase().includes(q) ||
-        (m.group && m.group.toLowerCase().includes(q));
-
-      const matchGroup = filterGroup === 'ALL' || m.group === filterGroup;
+        m.facultyName?.toLowerCase().includes(q) ||
+        m.subjectName?.toLowerCase().includes(q) ||
+        m.subjectCode?.toLowerCase().includes(q) ||
+        m.section?.toLowerCase().includes(q);
       const matchSection = filterSection === 'ALL' || m.section === filterSection;
-
-      return matchSearch && matchGroup && matchSection;
+      return matchSearch && matchSection;
     });
-  }, [mappings, deferredSearchTerm, filterGroup, filterSection]);
+  }, [mappings, deferredSearchTerm, filterSection]);
 
-  // Filtered students for inspection modal
+  useEffect(() => {
+    setPage(1);
+  }, [deferredSearchTerm, filterSection]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredMappings.length / PAGE_SIZE));
+  const pagedMappings = useMemo(() => {
+    const start = (page - 1) * PAGE_SIZE;
+    return filteredMappings.slice(start, start + PAGE_SIZE);
+  }, [filteredMappings, page]);
+
   const modalFilteredStudents = useMemo(() => {
     if (!inspectModalRoster || !inspectModalRoster.students) return [];
     if (!rosterSearchTerm.trim()) return inspectModalRoster.students;
     const term = rosterSearchTerm.toLowerCase();
     return inspectModalRoster.students.filter(
       (s) =>
-        s.registrationNumber.toLowerCase().includes(term) ||
-        s.studentName.toLowerCase().includes(term)
+        s.registrationNumber?.toLowerCase().includes(term) ||
+        (s.studentName || s.name || '').toLowerCase().includes(term)
     );
   }, [inspectModalRoster, rosterSearchTerm]);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 max-w-full overflow-x-hidden">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between pb-4 border-b border-slate-200">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-4 border-b border-[#E5E7EB] dark:border-[#30384A]">
         <div>
           <div className="flex items-center space-x-2">
-            <span className="p-1.5 rounded-lg bg-primary/10 text-primary">
-              <UserCheck size={20} />
+            <span className="p-2 rounded-xl bg-[#F8DCEB] dark:bg-[#F472B6]/15 text-primary">
+              <UserCheck size={18} />
             </span>
-            <h1 className="text-xl font-bold text-navy-800 tracking-tight">
-              Faculty, Subject & Student Permanent Mapping
+            <h1 className="text-xl font-bold text-[#172033] dark:text-[#F8FAFC] tracking-tight">
+              Section-Wise Faculty &amp; Student Mapping
             </h1>
           </div>
-          <p className="text-xs text-slate-500 mt-1">
-            Intelligently separates multi-subject PDF nominal lists into independent rosters per faculty, section and group. Students are permanently mapped in MongoDB and auto-load during examination creation.
+          <p className="text-xs text-[#64748B] dark:text-[#A1A1AA] mt-1">
+            Configure ONE subject, ONE section, and ONE faculty roster at a time (PDF, Excel, or CSV).
           </p>
         </div>
         <button
-          onClick={fetchMappings}
-          className="mt-3 sm:mt-0 inline-flex items-center px-3 py-1.5 border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 shadow-xs cursor-pointer"
+          type="button"
+          onClick={() => fetchMappings()}
+          className="es-btn-secondary self-start sm:self-center"
         >
-          <RefreshCw size={13} className="mr-1.5" />
-          Refresh
+          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+          <span>Refresh</span>
         </button>
       </div>
 
-      {/* Global Alerts */}
+      {/* Alerts */}
       {successMessage && (
-        <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 flex items-start shadow-xs">
+        <div className="p-4 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-xl text-xs text-emerald-800 dark:text-emerald-200 flex items-start">
           <CheckCircle2 size={18} className="mr-2.5 text-emerald-600 flex-shrink-0 mt-0.5" />
           <div className="flex-1 font-medium">{successMessage}</div>
-          <button
-            onClick={() => setSuccessMessage('')}
-            className="text-emerald-500 hover:text-emerald-700 ml-2"
-          >
+          <button type="button" onClick={() => setSuccessMessage('')} className="ml-2">
             <X size={14} />
           </button>
         </div>
       )}
 
       {previewError && (
-        <div className="p-4 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 flex items-start shadow-xs">
+        <div className="p-4 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 rounded-xl text-xs text-red-700 dark:text-red-200 flex items-start">
           <AlertCircle size={18} className="mr-2.5 text-red-600 flex-shrink-0 mt-0.5" />
           <div className="flex-1 font-medium whitespace-pre-line">{previewError}</div>
-          <button
-            onClick={() => setPreviewError('')}
-            className="text-red-500 hover:text-red-700 ml-2"
-          >
+          <button type="button" onClick={() => setPreviewError('')} className="ml-2">
             <X size={14} />
           </button>
         </div>
       )}
 
       {refreshWarning && (
-        <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 flex items-start shadow-xs">
+        <div className="p-4 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-xl text-xs text-amber-800 dark:text-amber-200 flex items-start">
           <AlertCircle size={18} className="mr-2.5 text-amber-600 flex-shrink-0 mt-0.5" />
           <div className="flex-1 font-medium">{refreshWarning}</div>
-          <button
-            onClick={() => setRefreshWarning('')}
-            className="text-amber-500 hover:text-amber-700 ml-2"
-          >
+          <button type="button" onClick={() => setRefreshWarning('')} className="ml-2">
             <X size={14} />
           </button>
         </div>
       )}
 
-      {activeJob && (
-        <div className="p-4 bg-white border border-slate-200 rounded-xl shadow-xs space-y-2.5">
-          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-            <div className="flex items-center space-x-2">
-              <span className="font-bold text-navy-800">
-                Background Job ({activeJob.jobType === 'UPLOAD_PREVIEW' ? 'PDF Extraction' : 'Batch Mapping Save'})
-              </span>
-              <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-slate-100 text-slate-600">
-                ID: {activeJob.jobId}
-              </span>
-              <span
-                className={`text-[10px] font-bold px-2 py-0.5 rounded ${activeJob.status === 'COMPLETED'
-                  ? 'bg-emerald-100 text-emerald-800'
-                  : activeJob.status === 'PARTIAL_FAILED'
-                    ? 'bg-amber-100 text-amber-800'
-                    : activeJob.status === 'FAILED'
-                      ? 'bg-red-100 text-red-700'
-                      : 'bg-blue-100 text-blue-700'
-                  }`}
-              >
-                {activeJob.status}
-              </span>
-            </div>
-            <div className="flex items-center space-x-3 text-[11px] font-semibold">
-              <span className="text-emerald-700">Completed: {activeJob.progress?.completed ?? 0}</span>
-              <span className="text-red-600">Failed: {activeJob.progress?.failed ?? 0}</span>
-              <span className="text-slate-600">Pending: {activeJob.progress?.pending ?? 0}</span>
-            </div>
-          </div>
-
-          <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
-            <div
-              className={`h-full transition-all duration-300 ${activeJob.status === 'FAILED'
-                ? 'bg-red-500'
-                : activeJob.status === 'PARTIAL_FAILED'
-                  ? 'bg-amber-500'
-                  : 'bg-primary'
-                }`}
-              style={{ width: `${Math.min(100, Math.max(5, activeJob.progress?.percent ?? 0))}%` }}
-            />
-          </div>
-
-          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600">
-            <span>{activeJob.progress?.currentStage || 'Processing...'}</span>
-            {activeJob.jobType === 'CONFIRM_BATCH' &&
-              (activeJob.failedItems?.length || 0) > 0 &&
-              ['PARTIAL_FAILED', 'FAILED'].includes(activeJob.status) && (
-                <button
-                  type="button"
-                  onClick={handleRetryFailedJob}
-                  disabled={retryingJob}
-                  className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-[11px] transition-colors cursor-pointer disabled:opacity-50"
-                >
-                  {retryingJob ? 'Retrying Failed Mappings...' : `Retry Failed (${activeJob.failedItems.length})`}
-                </button>
-              )}
-          </div>
-        </div>
-      )}
-
-      {/* Inconsistent Student Name Warning Banner */}
       {inconsistentNames.length > 0 && (
-        <div className="p-4 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-900 space-y-1.5 shadow-xs">
+        <div className="p-4 bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 rounded-xl text-xs text-amber-900 dark:text-amber-200 space-y-1">
           <div className="font-bold flex items-center justify-between">
-            <span>
-              Inconsistent Student Name(s) Detected ({inconsistentNames.length}) — Review &amp; Edit Before Confirming Save
-            </span>
-            <button
-              type="button"
-              onClick={() => setInconsistentNames([])}
-              className="text-amber-700 hover:text-amber-900 cursor-pointer"
-            >
+            <span>Inconsistent Student Name(s) Detected ({inconsistentNames.length}) — Review Inline Before Saving</span>
+            <button type="button" onClick={() => setInconsistentNames([])} className="cursor-pointer">
               <X size={14} />
             </button>
           </div>
-          <ul className="list-disc pl-5 space-y-0.5 text-[11px]">
-            {inconsistentNames.slice(0, 8).map((item) => (
+          <ul className="list-disc pl-5 text-[11px]">
+            {inconsistentNames.slice(0, 6).map((item) => (
               <li key={item.registrationNumber}>
-                <span className="font-mono font-bold">{item.registrationNumber}</span>:{' '}
-                {(item.names || []).join(' vs ')}
+                <span className="font-mono font-bold">{item.registrationNumber}</span>: {(item.names || []).join(' vs ')}
               </li>
             ))}
           </ul>
-          <p className="text-[11px] text-amber-800">
-            Click &quot;View&quot; on any extracted mapping row (or edit names inline) to standardize student names before saving.
-          </p>
         </div>
       )}
 
-      {/* Main Layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left Column: Mapping Creation / Upload Form (5 cols) */}
-        <div className="lg:col-span-5 space-y-4">
-          <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <h2 className="text-xs font-bold uppercase tracking-wider text-navy-800 flex items-center">
-                <UploadCloud size={16} className="mr-2 text-primary" />
-                Upload Student Roster PDF
-              </h2>
-              <span className="text-[10px] bg-blue-50 text-primary font-bold px-2 py-0.5 rounded border border-blue-200">
-                AI Multi-Roster Parser
-              </span>
-            </div>
-
-            {/* Workflow Mode Tabs */}
-            <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-lg text-xs font-semibold">
-              <button
-                type="button"
-                onClick={() => setUploadMode('multi')}
-                className={`py-1.5 px-3 rounded-md transition-all text-center flex items-center justify-center space-x-1.5 ${uploadMode === 'multi'
-                  ? 'bg-white text-primary shadow-xs font-bold'
-                  : 'text-slate-600 hover:text-navy-800'
-                  }`}
-              >
-                <Sparkles size={13} className="text-amber-500" />
-                <span>Multi-Subject PDF</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setUploadMode('single')}
-                className={`py-1.5 px-3 rounded-md transition-all text-center flex items-center justify-center space-x-1.5 ${uploadMode === 'single'
-                  ? 'bg-white text-primary shadow-xs font-bold'
-                  : 'text-slate-600 hover:text-navy-800'
-                  }`}
-              >
-                <Layers size={13} />
-                <span>Single Subject</span>
-              </button>
-            </div>
-
-            {uploadMode === 'multi' ? (
-              <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-lg text-[11px] text-amber-900 space-y-1">
-                <div className="font-bold flex items-center">
-                  <Info size={13} className="mr-1.5 text-amber-600" />
-                  Intelligent Multi-Roster Separation
-                </div>
-                <p className="text-amber-800 leading-relaxed">
-                  Upload complete nominal rolls (e.g. <strong>Group-A.pdf</strong> or <strong>Group-B.pdf</strong>). The system automatically separates all 27 distinct subject rosters, accurately assigns each section (A1–A6) and faculty member, and avoids cross-subject duplicate errors.
-                </p>
-              </div>
-            ) : null}
-
-            <form onSubmit={handleUploadAndPreview} className="space-y-3.5">
-              {uploadMode === 'single' && (
-                <>
-                  {/* Faculty Name & Optional ID */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                    <div className="sm:col-span-2">
-                      <label className="block text-[11px] font-bold text-navy-800 mb-1">
-                        Faculty Name: <span className="text-red-500">*</span>
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        value={facultyName}
-                        onChange={(e) => setFacultyName(e.target.value)}
-                        placeholder="e.g. Dr. Rajesh Kumar"
-                        className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary bg-white font-medium"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-bold text-navy-800 mb-1">
-                        Faculty ID:
-                      </label>
-                      <input
-                        type="text"
-                        value={facultyIdCode}
-                        onChange={(e) => setFacultyIdCode(e.target.value)}
-                        placeholder="FAC101"
-                        className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary bg-white font-mono uppercase"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Subject Presets & Custom Name */}
-                  <div>
-                    <label className="block text-[11px] font-bold text-navy-800 mb-1">
-                      Subject Name: <span className="text-red-500">*</span>
-                    </label>
-                    <div className="flex flex-wrap gap-1.5 mb-2">
-                      {subjectPresets.slice(0, 4).map((p) => (
-                        <button
-                          key={p.name}
-                          type="button"
-                          onClick={() => handleSubjectSelect(p)}
-                          className={`px-2 py-1 rounded text-[10px] font-bold transition-colors ${subjectName === p.name
-                            ? 'bg-primary text-white'
-                            : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                            }`}
-                        >
-                          {p.name.split(' ')[0]}
-                        </button>
-                      ))}
-                    </div>
-                    <input
-                      type="text"
-                      required
-                      value={subjectName}
-                      onChange={(e) => setSubjectName(e.target.value)}
-                      placeholder="e.g. Computer Networks and Internet Protocols"
-                      className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary bg-white font-medium"
-                    />
-                  </div>
-
-                  {/* Subject Code, Section & Group */}
-                  <div className="grid grid-cols-3 gap-2">
-                    <div>
-                      <label className="block text-[10px] font-bold text-navy-800 mb-1">
-                        Code: <span className="text-red-500">*</span>
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        value={subjectCode}
-                        onChange={(e) => setSubjectCode(e.target.value)}
-                        placeholder="20A05502T"
-                        className="w-full px-2.5 py-1.5 text-xs font-mono font-bold border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary bg-white text-primary"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[10px] font-bold text-navy-800 mb-1">
-                        Section: <span className="text-red-500">*</span>
-                      </label>
-                      <select
-                        value={section}
-                        onChange={(e) => setSection(e.target.value)}
-                        className="w-full px-2 py-1.5 text-xs font-bold border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary bg-white text-navy-800"
-                      >
-                        {sectionsList.map((sec) => (
-                          <option key={sec} value={sec}>
-                            {sec}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-[10px] font-bold text-navy-800 mb-1">
-                        Group: <span className="text-red-500">*</span>
-                      </label>
-                      <select
-                        value={group}
-                        onChange={(e) => setGroup(e.target.value)}
-                        className="w-full px-2 py-1.5 text-xs font-bold border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary bg-white text-navy-800"
-                      >
-                        <option value="Group A">Group A</option>
-                        <option value="Group B">Group B</option>
-                      </select>
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {/* Student PDF / Excel / CSV Dropzone */}
-              <div>
-                <label className="block text-[11px] font-bold text-navy-800 mb-1">
-                  Select Roster File (PDF, Excel .xlsx/.xls, or CSV): <span className="text-red-500">*</span>
-                </label>
-                <div className="border-2 border-dashed border-slate-300 hover:border-primary/60 rounded-xl p-4 text-center bg-slate-50/50 transition-colors">
-                  <input
-                    type="file"
-                    id="studentPdfFile"
-                    accept=".pdf,.xlsx,.xls,.csv,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"
-                    onChange={handleFileChange}
-                    className="hidden"
-                  />
-                  <label htmlFor="studentPdfFile" className="cursor-pointer block space-y-1.5">
-                    <FileText size={28} className="mx-auto text-primary" />
-                    <div className="text-xs font-semibold text-navy-800">
-                      {selectedFile ? selectedFile.name : 'Click to select PDF, Excel (.xlsx/.xls), or CSV roster'}
-                    </div>
-                    <div className="text-[10px] text-slate-500">
-                      {uploadMode === 'multi'
-                        ? 'Supports multi-subject PDF nominal rolls & structured Excel/CSV sheets'
-                        : 'Extracts Registration Numbers & Names cleanly for Admin review'}
-                    </div>
-                  </label>
-                </div>
-              </div>
-
-              {/* Version Replacement Option */}
-              <div className="flex items-center space-x-2 pt-1">
-                <input
-                  type="checkbox"
-                  id="replaceVer"
-                  checked={replaceExisting}
-                  onChange={(e) => setReplaceExisting(e.target.checked)}
-                  className="rounded text-primary focus:ring-primary"
-                />
-                <label htmlFor="replaceVer" className="text-[11px] text-slate-600 cursor-pointer">
-                  Update/Replace existing mapping versions if already configured
-                </label>
-              </div>
-
-              {/* Preview Button */}
-              <button
-                type="submit"
-                disabled={uploading || !selectedFile}
-                className="w-full py-2.5 px-4 rounded-lg text-xs font-bold text-white bg-primary hover:bg-primary-hover shadow-sm transition-colors disabled:opacity-50 flex items-center justify-center space-x-2 cursor-pointer"
-              >
-                {uploading ? (
-                  <span>Analyzing & Extracting Rosters...</span>
-                ) : (
-                  <>
-                    <UploadCloud size={15} />
-                    <span>Extract & Preview Student Rosters</span>
-                  </>
-                )}
-              </button>
-            </form>
-
-            {/* Single Mapping Preview Table */}
-            {!isMultiRoster && previewStudents.length > 0 && (
-              <div className="pt-4 border-t border-slate-200 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-2">
-                    <ShieldCheck size={16} className="text-emerald-600" />
-                    <span className="text-xs font-bold text-navy-800">
-                      Extracted {previewStudents.length} Students
-                    </span>
-                  </div>
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-100 text-emerald-800">
-                    Ready to Save
-                  </span>
-                </div>
-
-                <div className="max-h-56 overflow-y-auto border border-slate-200 rounded-lg">
-                  <table className="w-full text-left text-[11px]">
-                    <thead className="bg-slate-100 text-slate-700 font-semibold sticky top-0">
-                      <tr>
-                        <th className="py-1.5 px-2.5 text-center w-10">#</th>
-                        <th className="py-1.5 px-3">Reg. Number</th>
-                        <th className="py-1.5 px-3">Student Name</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {previewStudents.slice(0, 50).map((st, i) => (
-                        <tr key={st.registrationNumber || i} className="hover:bg-slate-50">
-                          <td className="py-1 px-2.5 text-center text-slate-400 font-mono text-[10px]">
-                            {st.sNo || i + 1}
-                          </td>
-                          <td className="py-1 px-3 font-mono font-bold text-primary">
-                            {st.registrationNumber}
-                          </td>
-                          <td className="py-1 px-3 font-medium text-navy-800">
-                            <input
-                              type="text"
-                              value={st.studentName || ''}
-                              onChange={(e) => handleUpdatePreviewStudentName(i, e.target.value)}
-                              className="w-full bg-transparent border-b border-transparent hover:border-slate-300 focus:border-primary focus:outline-none text-[11px]"
-                              title="Click to edit student name before saving"
-                            />
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                {previewStudents.length > 15 && (
-                  <p className="text-[10px] text-slate-500 text-center">
-                    ...and {previewStudents.length - 15} more verified student records.
-                  </p>
-                )}
-
-                <button
-                  type="button"
-                  onClick={handleConfirmSingleMapping}
-                  disabled={confirming}
-                  className="w-full py-2.5 px-4 rounded-lg text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 shadow-sm transition-colors flex items-center justify-center space-x-2 disabled:opacity-50 cursor-pointer"
-                >
-                  {confirming ? (
-                    <span>Saving Permanent Roster to MongoDB...</span>
-                  ) : (
-                    <>
-                      <CheckCircle2 size={15} />
-                      <span>Confirm & Permanently Save Mapping</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            )}
+      {activeJob && (
+        <div className="es-glass-card p-4 space-y-2 text-xs">
+          <div className="flex items-center justify-between">
+            <span className="font-bold text-[#172033] dark:text-[#F8FAFC]">
+              Extracting Student Roster...
+            </span>
+            <span className="font-mono font-bold text-primary">{activeJob.progress?.percent ?? 10}%</span>
+          </div>
+          <div className="w-full h-2 bg-[#F7F7FB] dark:bg-[#141926] rounded-full overflow-hidden">
+            <div
+              className="h-full bg-primary transition-all duration-300"
+              style={{ width: `${Math.min(100, Math.max(8, activeJob.progress?.percent ?? 0))}%` }}
+            />
           </div>
         </div>
+      )}
 
-        {/* Right Column: Multi-Roster Preview OR Active Permanent Mappings List (7 cols) */}
-        <div className="lg:col-span-7 space-y-4">
-          {/* MULTI-ROSTER EXTRACTION PREVIEW BANNER & TABLE */}
-          {isMultiRoster && multiSummary && (
-            <div className="bg-white p-5 rounded-xl border-2 border-primary/30 shadow-md space-y-4 animate-in fade-in duration-300">
-              {/* Header and Action */}
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-200 pb-4">
-                <div>
-                  <div className="flex items-center space-x-2">
-                    <span className="p-1.5 rounded-lg bg-emerald-100 text-emerald-700">
-                      <Sparkles size={18} />
-                    </span>
-                    <h2 className="text-sm font-bold text-navy-800">
-                      Multi-Subject Roster Extracted Successfully
-                    </h2>
-                  </div>
-                  <p className="text-xs text-slate-500 mt-1">
-                    {multiSummary.totalPages} pages processed • {multiSummary.totalMappings} independent rosters identified
-                  </p>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={handleConfirmBatchMappings}
-                  disabled={confirming}
-                  className="inline-flex items-center px-4 py-2 rounded-lg text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 shadow-sm transition-all disabled:opacity-50 cursor-pointer"
-                >
-                  {confirming ? (
-                    <span>Saving {multiMappings.length} Mappings to MongoDB...</span>
-                  ) : (
-                    <>
-                      <CheckCircle2 size={15} className="mr-1.5" />
-                      <span>Confirm & Save All ({multiMappings.length}) Mappings</span>
-                    </>
-                  )}
-                </button>
-              </div>
-
-              {/* Extraction Metrics Cards */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
-                  <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                    Total Rosters
-                  </div>
-                  <div className="text-lg font-black text-navy-800 mt-0.5">
-                    {multiSummary.totalMappings}
-                  </div>
-                  <div className="text-[10px] text-slate-400">Independent mappings</div>
-                </div>
-
-                <div className="bg-blue-50/60 p-3 rounded-xl border border-blue-200">
-                  <div className="text-[10px] font-bold text-blue-700 uppercase tracking-wider">
-                    Total Enrollments
-                  </div>
-                  <div className="text-lg font-black text-primary mt-0.5">
-                    {multiSummary.totalEnrollments || multiSummary.totalStudentEnrollments}
-                  </div>
-                  <div className="text-[10px] text-blue-500">Subject-student pairs</div>
-                </div>
-
-                <div className="bg-emerald-50/60 p-3 rounded-xl border border-emerald-200">
-                  <div className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider">
-                    Unique Students
-                  </div>
-                  <div className="text-lg font-black text-emerald-800 mt-0.5">
-                    {multiSummary.uniqueStudents || multiSummary.totalUniqueStudents}
-                  </div>
-                  <div className="text-[10px] text-emerald-600">Enrolled across subjects</div>
-                </div>
-
-                <div className="bg-purple-50/60 p-3 rounded-xl border border-purple-200">
-                  <div className="text-[10px] font-bold text-purple-700 uppercase tracking-wider">
-                    Sections & Group
-                  </div>
-                  <div className="text-sm font-black text-purple-900 mt-1">
-                    {(multiSummary.sections || multiSummary.sectionsDetected || []).join(', ')}
-                  </div>
-                  <div className="text-[10px] text-purple-600 font-semibold">
-                    {multiSummary.group || 'Group A'}
-                  </div>
-                </div>
-              </div>
-
-              {/* Mapping Preview Table */}
-              <div className="border border-slate-200 rounded-xl overflow-hidden shadow-xs">
-                <div className="max-h-96 overflow-y-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-100 text-slate-700 font-bold sticky top-0 border-b border-slate-200 z-10">
-                      <tr>
-                        <th className="py-2 px-2.5 text-center w-8">#</th>
-                        <th className="py-2 px-2.5">Subject & Code</th>
-                        <th className="py-2 px-2.5">Faculty Name</th>
-                        <th className="py-2 px-2 text-center">Sec</th>
-                        <th className="py-2 px-2 text-center">Group</th>
-                        <th className="py-2 px-2.5 text-center">Students</th>
-                        <th className="py-2 px-2 text-center">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 bg-white">
-                      {multiMappings.map((m, idx) => (
-                        <tr key={m.id || idx} className="hover:bg-slate-50 transition-colors">
-                          <td className="py-2 px-2 text-center text-slate-400 font-mono text-[11px]">
-                            {idx + 1}
-                          </td>
-                          <td className="py-2 px-2.5">
-                            <input
-                              type="text"
-                              value={m.subjectName}
-                              onChange={(e) => handleUpdateMultiMapping(idx, 'subjectName', e.target.value)}
-                              className="w-full font-bold text-navy-800 text-[11px] bg-transparent border-b border-transparent hover:border-slate-300 focus:border-primary focus:outline-none"
-                              title="Click to edit subject name"
-                            />
-                            <input
-                              type="text"
-                              value={m.subjectCode}
-                              onChange={(e) => handleUpdateMultiMapping(idx, 'subjectCode', e.target.value)}
-                              placeholder="CODE"
-                              className="font-mono text-[10px] text-primary font-bold bg-transparent border-b border-transparent hover:border-slate-300 focus:border-primary focus:outline-none"
-                              title="Click to edit subject code"
-                            />
-                          </td>
-                          <td className="py-2 px-2.5">
-                            <input
-                              type="text"
-                              value={m.facultyName}
-                              onChange={(e) => handleUpdateMultiMapping(idx, 'facultyName', e.target.value)}
-                              className="w-full text-[11px] font-semibold text-slate-800 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-primary focus:outline-none"
-                              title="Click to edit faculty name"
-                            />
-                            <input
-                              type="text"
-                              value={m.facultyIdCode || ''}
-                              onChange={(e) => handleUpdateMultiMapping(idx, 'facultyIdCode', e.target.value.toUpperCase())}
-                              placeholder="FAC-ID (optional)"
-                              className="font-mono text-[10px] text-slate-500 uppercase bg-transparent border-b border-transparent hover:border-slate-300 focus:border-primary focus:outline-none"
-                              title="Click to edit Faculty ID"
-                            />
-                          </td>
-                          <td className="py-2 px-2 text-center">
-                            <select
-                              value={m.section}
-                              onChange={(e) => handleUpdateMultiMapping(idx, 'section', e.target.value)}
-                              className="text-[10px] font-bold px-1 py-0.5 rounded border border-slate-300 bg-white"
-                            >
-                              {sectionsList.map((s) => (
-                                <option key={s} value={s}>
-                                  {s}
-                                </option>
-                              ))}
-                            </select>
-                          </td>
-                          <td className="py-2 px-2 text-center">
-                            <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-50 text-purple-700 border border-purple-200">
-                              {m.group}
-                            </span>
-                          </td>
-                          <td className="py-2 px-2.5 text-center font-mono font-bold text-emerald-700 text-xs">
-                            {m.students.length}
-                          </td>
-                          <td className="py-2 px-2 text-center">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setInspectMultiIndex(idx);
-                                setInspectModalRoster(m);
-                                setRosterSearchTerm('');
-                              }}
-                              className="inline-flex items-center px-2 py-1 rounded text-[10px] font-semibold bg-slate-100 hover:bg-primary hover:text-white text-slate-700 transition-colors cursor-pointer"
-                              title="View and edit student names"
-                            >
-                              <Eye size={11} className="mr-1" />
-                              View
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ACTIVE PERMANENT MAPPINGS LIST */}
-          <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-100 pb-3">
-              <div>
-                <h2 className="text-xs font-bold uppercase tracking-wider text-navy-800 flex items-center">
-                  <Layers size={16} className="mr-2 text-primary" />
-                  Active Permanent Mappings ({filteredMappings.length} / {mappings.length})
-                </h2>
-                <p className="text-[11px] text-slate-500 mt-0.5">
-                  Pre-configured faculty & section student pools for autonomous examination creation
-                </p>
-              </div>
-
-              {/* Search Bar */}
-              <div className="relative w-full sm:w-52">
-                <Search className="absolute left-2.5 top-2.5 text-slate-400" size={13} />
-                <input
-                  type="text"
-                  placeholder="Search mappings..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full pl-8 pr-3 py-1.5 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary"
-                />
-              </div>
-            </div>
-
-            {/* Filter Tabs for Group and Section */}
-            <div className="flex flex-wrap items-center gap-2 pt-1 pb-2">
-              <div className="flex items-center space-x-1 bg-slate-100 p-1 rounded-lg text-[10px] font-bold">
-                {['ALL', 'Group A', 'Group B'].map((grp) => (
-                  <button
-                    key={grp}
-                    onClick={() => setFilterGroup(grp)}
-                    className={`px-2 py-1 rounded transition-colors cursor-pointer ${filterGroup === grp
-                      ? 'bg-white text-primary shadow-2xs font-extrabold'
-                      : 'text-slate-600 hover:text-navy-800'
-                      }`}
-                  >
-                    {grp === 'ALL' ? 'All Groups' : grp}
-                  </button>
-                ))}
-              </div>
-
-              <div className="flex items-center space-x-1 bg-slate-100 p-1 rounded-lg text-[10px] font-bold">
-                {['ALL', ...sectionsList].map((sec) => (
-                  <button
-                    key={sec}
-                    onClick={() => setFilterSection(sec)}
-                    className={`px-1.5 py-1 rounded transition-colors cursor-pointer ${filterSection === sec
-                      ? 'bg-primary text-white font-extrabold'
-                      : 'text-slate-600 hover:text-navy-800'
-                      }`}
-                  >
-                    {sec}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {loading ? (
-              <div className="py-12 text-center text-xs text-slate-500">
-                Loading faculty-student mappings...
-              </div>
-            ) : filteredMappings.length === 0 ? (
-              <div className="py-12 text-center space-y-2">
-                <Users className="mx-auto text-slate-300" size={36} />
-                <div className="text-xs font-bold text-navy-800">No mappings matched your filter.</div>
-                <p className="text-[11px] text-slate-500 max-w-sm mx-auto">
-                  Upload Group A or Group B nominal PDFs on the left to automatically configure all 27 subject-wise mappings.
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-3 max-h-[600px] overflow-y-auto pr-1">
-                {filteredMappings.map((m) => (
-                  <div
-                    key={m._id}
-                    className="p-3.5 rounded-xl border border-slate-200 hover:border-primary/40 bg-white transition-all shadow-xs flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"
-                  >
-                    <div className="space-y-1">
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="font-bold text-navy-800 text-xs sm:text-sm">
-                          {m.subjectName}
-                        </span>
-                        <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-blue-50 text-primary border border-blue-200">
-                          {m.subjectCode}
-                        </span>
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200">
-                          Section {m.section}
-                        </span>
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
-                          {m.group || 'Group A'}
-                        </span>
-                        <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-semibold bg-slate-100 text-slate-600">
-                          v{m.version || 1}
-                        </span>
-                      </div>
-                      <div className="text-xs text-slate-600 flex items-center space-x-3">
-                        <span>
-                          Faculty: <strong className="text-navy-800">{m.facultyName}</strong>
-                        </span>
-                        <span>•</span>
-                        <span className="inline-flex items-center font-semibold text-emerald-700">
-                          <Users size={12} className="mr-1" />
-                          {m.studentCount || (m.students ? m.students.length : 0)} Enrolled Students
-                        </span>
-                      </div>
-                      <div className="text-[10px] text-slate-400">
-                        Permanently stored in MongoDB • Auto-loads on examination creation
-                      </div>
-                    </div>
-
-                    <div className="flex items-center space-x-2 sm:self-center">
-                      <button
-                        onClick={() => {
-                          setInspectModalRoster(m);
-                          setRosterSearchTerm('');
-                        }}
-                        title="View Enrolled Students"
-                        className="p-1.5 text-slate-600 hover:text-primary hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
-                      >
-                        <Eye size={15} />
-                      </button>
-                      <button
-                        onClick={() =>
-                          handleDeleteMapping(m._id, `${m.subjectName} (${m.section} - ${m.group})`)
-                        }
-                        title="Deactivate Mapping"
-                        className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
-                      >
-                        <Trash2 size={15} />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+      {/* Single Section Mapping Upload Card */}
+      <section className="es-glass-card p-5 sm:p-6 space-y-5">
+        <div className="flex items-center justify-between border-b border-[#E5E7EB] dark:border-[#30384A] pb-3">
+          <h2 className="text-sm font-bold text-[#172033] dark:text-[#F8FAFC] flex items-center">
+            <UploadCloud size={17} className="mr-2 text-primary" />
+            Upload Single Section Student Roster
+          </h2>
+          <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-[#F8DCEB] dark:bg-[#F472B6]/15 text-primary">
+            1 Subject • 1 Section
+          </span>
         </div>
-      </div>
 
-      {/* ROSTER INSPECTION MODAL */}
-      {inspectModalRoster && (
-        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
-            {/* Modal Header */}
-            <div className="p-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
-              <div>
-                <div className="flex items-center space-x-2">
-                  <h3 className="text-sm font-bold text-navy-800">
-                    {inspectModalRoster.subjectName}
-                  </h3>
-                  <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-blue-100 text-primary">
-                    {inspectModalRoster.subjectCode}
-                  </span>
-                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-700">
-                    Section {inspectModalRoster.section}
-                  </span>
-                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700">
-                    {inspectModalRoster.group}
-                  </span>
-                </div>
-                <p className="text-xs text-slate-500 mt-1">
-                  Faculty: <strong className="text-slate-800">{inspectModalRoster.facultyName}</strong> •{' '}
-                  <span className="text-emerald-700 font-bold">
-                    {inspectModalRoster.students ? inspectModalRoster.students.length : inspectModalRoster.studentCount}{' '}
-                    Students
-                  </span>
-                </p>
+        <form onSubmit={handleUploadAndPreview} className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div>
+              <label className="block text-xs font-bold text-[#172033] dark:text-[#F8FAFC] mb-1.5">
+                Existing Subject Preset
+              </label>
+              <select
+                value={subjectCode || ''}
+                onChange={handleSubjectDropdown}
+                className="es-input"
+              >
+                <option value="">Custom / New Subject</option>
+                {subjectPresets.map((p) => (
+                  <option key={p.code || p.name} value={p.code || p.name}>
+                    {p.name} ({p.code})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-[#172033] dark:text-[#F8FAFC] mb-1.5">
+                Subject Name <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                required
+                value={subjectName}
+                onChange={(e) => setSubjectName(e.target.value)}
+                placeholder="e.g. Compiler Design"
+                className="es-input"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-[#172033] dark:text-[#F8FAFC] mb-1.5">
+                Subject Code <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                required
+                value={subjectCode}
+                onChange={(e) => setSubjectCode(e.target.value.toUpperCase())}
+                placeholder="e.g. 20A05501T"
+                className="es-input font-mono font-bold text-primary uppercase"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-[#172033] dark:text-[#F8FAFC] mb-1.5">
+                Section <span className="text-red-500">*</span>
+              </label>
+              <select
+                value={section}
+                onChange={(e) => setSection(e.target.value)}
+                className="es-input font-semibold"
+              >
+                {sectionsList.map((sec) => (
+                  <option key={sec} value={sec}>
+                    Section {sec}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-[#172033] dark:text-[#F8FAFC] mb-1.5">
+                Faculty Name <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                required
+                value={facultyName}
+                onChange={(e) => setFacultyName(e.target.value)}
+                placeholder="e.g. Dr. Rajesh Kumar"
+                className="es-input"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-[#172033] dark:text-[#F8FAFC] mb-1.5">
+                Faculty ID
+              </label>
+              <input
+                type="text"
+                value={facultyIdCode}
+                onChange={(e) => setFacultyIdCode(e.target.value.toUpperCase())}
+                placeholder="FAC101"
+                className="es-input font-mono uppercase"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-[#172033] dark:text-[#F8FAFC] mb-1.5">
+                Group
+              </label>
+              <select
+                value={group}
+                onChange={(e) => setGroup(e.target.value)}
+                className="es-input"
+              >
+                <option value="Group A">Group A (A1–A3)</option>
+                <option value="Group B">Group B (A4–A6)</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-[#172033] dark:text-[#F8FAFC] mb-1.5">
+                Roster File (.pdf, .xlsx, .csv) <span className="text-red-500">*</span>
+              </label>
+              <label
+                htmlFor="singleSectionRosterFile"
+                className="es-input flex items-center justify-between cursor-pointer overflow-hidden"
+              >
+                <span className="truncate text-xs">
+                  {selectedFile ? selectedFile.name : 'Choose PDF / Excel / CSV...'}
+                </span>
+                <FileText size={15} className="text-primary flex-shrink-0 ml-2" />
+              </label>
+              <input
+                type="file"
+                id="singleSectionRosterFile"
+                accept=".pdf,.xlsx,.xls,.csv"
+                onChange={handleFileChange}
+                className="hidden"
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-1">
+            <label className="inline-flex items-center space-x-2 text-xs text-[#64748B] dark:text-[#A1A1AA] cursor-pointer">
+              <input
+                type="checkbox"
+                checked={replaceExisting}
+                onChange={(e) => setReplaceExisting(e.target.checked)}
+                className="rounded text-primary focus:ring-primary"
+              />
+              <span>Update existing mapping version for this Subject &amp; Section</span>
+            </label>
+
+            <button
+              type="submit"
+              disabled={uploading || !selectedFile}
+              className="es-btn-primary"
+            >
+              <UploadCloud size={15} className="mr-1.5" />
+              <span>{uploading ? 'Extracting Roster...' : 'Extract & Preview Roster'}</span>
+            </button>
+          </div>
+        </form>
+
+        {/* Extracted Single Section Preview */}
+        {previewStudents.length > 0 && (
+          <div className="pt-4 border-t border-[#E5E7EB] dark:border-[#30384A] space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center space-x-2">
+                <ShieldCheck size={16} className="text-emerald-600" />
+                <span className="text-xs font-bold text-[#172033] dark:text-[#F8FAFC]">
+                  Extracted {previewStudents.length} Students for {subjectCode} ({section})
+                </span>
               </div>
               <button
-                onClick={() => {
-                  setInspectModalRoster(null);
-                  setInspectMultiIndex(null);
-                }}
-                className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-200 rounded-lg cursor-pointer"
+                type="button"
+                onClick={handleConfirmSingleMapping}
+                disabled={confirming}
+                className="es-btn-primary bg-emerald-600 hover:bg-emerald-700"
               >
-                <X size={18} />
+                <CheckCircle2 size={15} className="mr-1.5" />
+                <span>{confirming ? 'Saving Roster...' : 'Confirm & Save Mapping'}</span>
               </button>
             </div>
 
-            {/* Search within Modal */}
-            <div className="p-3 border-b border-slate-100 bg-white">
-              <div className="relative">
-                <Search className="absolute left-2.5 top-2.5 text-slate-400" size={13} />
-                <input
-                  type="text"
-                  placeholder="Filter students by name or registration number..."
-                  value={rosterSearchTerm}
-                  onChange={(e) => setRosterSearchTerm(e.target.value)}
-                  className="w-full pl-8 pr-3 py-1.5 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary"
-                />
-              </div>
-            </div>
-
-            {/* Modal Body: Student List Table */}
-            <div className="flex-1 overflow-y-auto p-4">
+            <div className="max-h-60 overflow-y-auto border border-[#E5E7EB] dark:border-[#30384A] rounded-xl">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-100 text-slate-700 font-semibold sticky top-0">
+                <thead className="bg-[#F7F7FB] dark:bg-[#141926] text-[#64748B] dark:text-[#A1A1AA] font-semibold sticky top-0 border-b border-[#E5E7EB] dark:border-[#30384A]">
                   <tr>
-                    <th className="py-2 px-3 text-center w-10">#</th>
+                    <th className="py-2 px-3 w-12">S.No.</th>
                     <th className="py-2 px-3">Registration Number</th>
-                    <th className="py-2 px-3">Student Name</th>
+                    <th className="py-2 px-3">Student Name (Click to Edit)</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {modalFilteredStudents.map((st, i) => (
-                    <tr key={st.registrationNumber || i} className="hover:bg-slate-50">
-                      <td className="py-1.5 px-3 text-center text-slate-400 font-mono text-[11px]">
+                <tbody className="divide-y divide-[#E5E7EB] dark:divide-[#30384A]">
+                  {previewStudents.map((st, i) => (
+                    <tr key={st.registrationNumber || i} className="hover:bg-[#F8DCEB]/20 dark:hover:bg-white/5">
+                      <td className="py-1.5 px-3 font-mono text-[#64748B] dark:text-[#A1A1AA]">
                         {st.sNo || i + 1}
                       </td>
                       <td className="py-1.5 px-3 font-mono font-bold text-primary">
                         {st.registrationNumber}
                       </td>
-                      <td className="py-1.5 px-3 font-medium text-navy-800">
-                        {inspectMultiIndex !== null ? (
-                          <input
-                            type="text"
-                            value={st.studentName || st.name || ''}
-                            onChange={(e) => handleUpdateInspectModalStudentName(st.registrationNumber, e.target.value)}
-                            className="w-full bg-white border border-slate-200 rounded px-2 py-1 text-xs focus:outline-none focus:border-primary"
-                          />
-                        ) : (
-                          st.studentName || st.name
-                        )}
+                      <td className="py-1.5 px-3">
+                        <input
+                          type="text"
+                          value={st.studentName || st.name || ''}
+                          onChange={(e) => handleUpdatePreviewStudentName(i, e.target.value)}
+                          className="w-full bg-transparent border-b border-transparent hover:border-[#E5E7EB] focus:border-primary focus:outline-none text-xs text-[#172033] dark:text-[#F8FAFC]"
+                        />
                       </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* Clean Paginated Section Mappings Table (No Card Clutter) */}
+      <section className="es-glass-card overflow-hidden">
+        <div className="p-4 sm:p-5 border-b border-[#E5E7EB] dark:border-[#30384A] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-bold text-[#172033] dark:text-[#F8FAFC]">
+              Saved Section Mappings ({filteredMappings.length})
+            </h2>
+            <p className="text-xs text-[#64748B] dark:text-[#A1A1AA] mt-0.5">
+              Single-section student rosters stored in MongoDB.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={filterSection}
+              onChange={(e) => setFilterSection(e.target.value)}
+              aria-label="Filter by Section"
+              className="es-input w-auto min-w-[120px]"
+            >
+              <option value="ALL">All Sections</option>
+              {sectionsList.map((sec) => (
+                <option key={sec} value={sec}>Section {sec}</option>
+              ))}
+            </select>
+
+            <div className="relative w-full sm:w-56">
+              <Search className="absolute left-3 top-3 text-[#64748B] dark:text-[#A1A1AA]" size={14} />
+              <input
+                type="text"
+                placeholder="Search subject, code, faculty..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="es-input pl-9"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          {loading ? (
+            <div className="p-8 text-center text-xs text-[#64748B] dark:text-[#A1A1AA]">
+              Loading permanent mappings...
+            </div>
+          ) : pagedMappings.length === 0 ? (
+            <div className="p-10 text-center space-y-2">
+              <Users className="mx-auto text-[#64748B]/50" size={32} />
+              <div className="text-xs font-bold text-[#172033] dark:text-[#F8FAFC]">No section mappings found</div>
+              <p className="text-xs text-[#64748B] dark:text-[#A1A1AA]">
+                Upload a single subject &amp; section student roster above to create a permanent mapping.
+              </p>
+            </div>
+          ) : (
+            <table className="w-full text-left text-xs">
+              <thead className="bg-[#F7F7FB] dark:bg-[#141926] text-[#64748B] dark:text-[#A1A1AA] font-semibold uppercase tracking-wider text-[11px] border-b border-[#E5E7EB] dark:border-[#30384A]">
+                <tr>
+                  <th className="py-3 px-4">Subject</th>
+                  <th className="py-3 px-4">Code</th>
+                  <th className="py-3 px-4">Section</th>
+                  <th className="py-3 px-4">Faculty</th>
+                  <th className="py-3 px-4 text-right">Students</th>
+                  <th className="py-3 px-4 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#E5E7EB] dark:divide-[#30384A]">
+                {pagedMappings.map((m) => (
+                  <tr key={m._id} className="hover:bg-[#F8DCEB]/20 dark:hover:bg-white/5 transition-colors">
+                    <td className="py-3 px-4 font-bold text-[#172033] dark:text-[#F8FAFC]">{m.subjectName}</td>
+                    <td className="py-3 px-4 font-mono font-bold text-primary">{m.subjectCode}</td>
+                    <td className="py-3 px-4">
+                      <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-[#F8DCEB] dark:bg-[#F472B6]/15 text-primary">
+                        {m.section}
+                      </span>
+                    </td>
+                    <td className="py-3 px-4 text-[#172033] dark:text-[#F8FAFC]">{m.facultyName}</td>
+                    <td className="py-3 px-4 text-right font-mono font-bold text-[#172033] dark:text-[#F8FAFC]">
+                      {m.studentCount || (m.students ? m.students.length : 0)}
+                    </td>
+                    <td className="py-3 px-4 text-right">
+                      <div className="inline-flex items-center space-x-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setInspectModalRoster(m);
+                            setRosterSearchTerm('');
+                          }}
+                          title="View Section Roster"
+                          className="p-1.5 text-[#64748B] dark:text-[#A1A1AA] hover:text-primary rounded-lg cursor-pointer"
+                        >
+                          <Eye size={15} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteMapping(m._id, `${m.subjectName} (${m.section})`)}
+                          title="Deactivate Mapping"
+                          className="p-1.5 text-[#64748B] dark:text-[#A1A1AA] hover:text-red-600 rounded-lg cursor-pointer"
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {/* Pagination */}
+        {totalPages > 1 && (
+          <div className="px-4 py-3 border-t border-[#E5E7EB] dark:border-[#30384A] flex items-center justify-between text-xs text-[#64748B] dark:text-[#A1A1AA]">
+            <span>
+              Page <strong className="text-[#172033] dark:text-[#F8FAFC]">{page}</strong> of {totalPages}
+            </span>
+            <div className="flex items-center space-x-1.5">
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page === 1}
+                className="p-1.5 rounded-lg border border-[#E5E7EB] dark:border-[#30384A] disabled:opacity-40 cursor-pointer"
+                aria-label="Previous page"
+              >
+                <ChevronLeft size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page === totalPages}
+                className="p-1.5 rounded-lg border border-[#E5E7EB] dark:border-[#30384A] disabled:opacity-40 cursor-pointer"
+                aria-label="Next page"
+              >
+                <ChevronRight size={14} />
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* Roster Inspection Modal */}
+      {inspectModalRoster && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-[#1B2030] border border-[#E5E7EB] dark:border-[#30384A] rounded-2xl shadow-2xl max-w-2xl w-full max-h-[85vh] flex flex-col overflow-hidden">
+            <div className="p-4 border-b border-[#E5E7EB] dark:border-[#30384A] flex items-center justify-between">
+              <div>
+                <div className="flex items-center space-x-2">
+                  <h3 className="text-sm font-bold text-[#172033] dark:text-[#F8FAFC]">
+                    {inspectModalRoster.subjectName}
+                  </h3>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-[#F8DCEB] dark:bg-[#F472B6]/15 text-primary">
+                    {inspectModalRoster.subjectCode}
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 dark:bg-white/10 text-[#172033] dark:text-[#F8FAFC]">
+                    Section {inspectModalRoster.section}
+                  </span>
+                </div>
+                <p className="text-xs text-[#64748B] dark:text-[#A1A1AA] mt-1">
+                  Faculty: <strong className="text-[#172033] dark:text-[#F8FAFC]">{inspectModalRoster.facultyName}</strong> •{' '}
+                  {inspectModalRoster.students ? inspectModalRoster.students.length : inspectModalRoster.studentCount} Students
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setInspectModalRoster(null)}
+                className="p-1.5 text-[#64748B] hover:text-primary rounded-lg cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="p-3 border-b border-[#E5E7EB] dark:border-[#30384A]">
+              <div className="relative">
+                <Search className="absolute left-3 top-3 text-[#64748B]" size={14} />
+                <input
+                  type="text"
+                  placeholder="Filter by registration number or student name..."
+                  value={rosterSearchTerm}
+                  onChange={(e) => setRosterSearchTerm(e.target.value)}
+                  className="es-input pl-9"
+                />
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-[#F7F7FB] dark:bg-[#141926] text-[#64748B] dark:text-[#A1A1AA] font-semibold sticky top-0">
+                  <tr>
+                    <th className="py-2 px-3 w-12">S.No.</th>
+                    <th className="py-2 px-3">Registration Number</th>
+                    <th className="py-2 px-3">Student Name</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#E5E7EB] dark:divide-[#30384A]">
+                  {modalFilteredStudents.map((st, i) => (
+                    <tr key={st.registrationNumber || i}>
+                      <td className="py-2 px-3 font-mono text-[#64748B] dark:text-[#A1A1AA]">{st.sNo || i + 1}</td>
+                      <td className="py-2 px-3 font-mono font-bold text-primary">{st.registrationNumber}</td>
+                      <td className="py-2 px-3 font-medium text-[#172033] dark:text-[#F8FAFC]">{st.studentName || st.name}</td>
                     </tr>
                   ))}
                   {modalFilteredStudents.length === 0 && (
                     <tr>
-                      <td colSpan="3" className="py-8 text-center text-slate-400 text-xs">
-                        No students match the search term.
+                      <td colSpan="3" className="py-8 text-center text-[#64748B] dark:text-[#A1A1AA]">
+                        No matching students found.
                       </td>
                     </tr>
                   )}
@@ -1434,20 +917,15 @@ const FacultyAssignments = () => {
               </table>
             </div>
 
-            {/* Modal Footer */}
-            <div className="p-3 border-t border-slate-200 bg-slate-50 flex items-center justify-between text-xs">
-              <span className="text-slate-500 font-medium">
+            <div className="p-3 border-t border-[#E5E7EB] dark:border-[#30384A] flex items-center justify-between text-xs">
+              <span className="text-[#64748B] dark:text-[#A1A1AA]">
                 Showing {modalFilteredStudents.length} of{' '}
-                {inspectModalRoster.students ? inspectModalRoster.students.length : inspectModalRoster.studentCount}{' '}
-                students
+                {inspectModalRoster.students ? inspectModalRoster.students.length : inspectModalRoster.studentCount} students
               </span>
               <button
                 type="button"
-                onClick={() => {
-                  setInspectModalRoster(null);
-                  setInspectMultiIndex(null);
-                }}
-                className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 rounded-lg font-bold text-slate-700 cursor-pointer"
+                onClick={() => setInspectModalRoster(null)}
+                className="es-btn-secondary"
               >
                 Close
               </button>

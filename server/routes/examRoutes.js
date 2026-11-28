@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const {
   getExams,
+  getCurrentExamination,
+  getSectionRoster,
   getExamById,
   createExam,
   updateExam,
@@ -20,6 +22,10 @@ const {
 const { protect, authorize } = require('../middleware/auth');
 
 router.use(protect, authorize('admin', 'faculty'));
+
+// Current Examination & Single-Section Roster Resolution
+router.get('/current', authorize('admin', 'faculty'), getCurrentExamination);
+router.get('/section-roster', authorize('admin', 'faculty'), getSectionRoster);
 
 // Examination Mapping Resolution & Creation (Admin and Faculty scoped strictly to own mappings)
 router.get('/resolve-mappings', authorize('admin', 'faculty'), resolveCentralizedMappings);

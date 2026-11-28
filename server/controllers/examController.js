@@ -59,7 +59,7 @@ async function runWithOptionalTransaction(workFn) {
     if (session) {
       try {
         await session.endSession();
-      } catch (e) {}
+      } catch (e) { }
     }
   }
 }
@@ -211,12 +211,12 @@ exports.getExams = async (req, res) => {
       let startDT = null;
       let endDT = null;
       if (normDate && ex.startTime) {
-        try { startDT = parseKolkataDateTime(normDate, ex.startTime); } catch (e) {}
+        try { startDT = parseKolkataDateTime(normDate, ex.startTime); } catch (e) { }
       }
       if (!startDT && ex.startDateTime) startDT = new Date(ex.startDateTime);
 
       if (normDate && ex.endTime) {
-        try { endDT = parseKolkataDateTime(normDate, ex.endTime); } catch (e) {}
+        try { endDT = parseKolkataDateTime(normDate, ex.endTime); } catch (e) { }
       }
       if (!endDT && ex.endDateTime) endDT = new Date(ex.endDateTime);
       return { normDate, startDT, endDT };
@@ -1022,7 +1022,7 @@ async function buildSectionAllocationsFromMappings({
       const meta = roomConflict.conflictMeta || {};
       const conflictErr = new Error(
         meta.message ||
-          `${assignedClassroom.name} (Section ${mapping.section}) is already booked by "${roomConflict.examName}" on ${normDate} from ${formatTime12h(roomConflict.startTime)} to ${formatTime12h(roomConflict.endTime)}.`
+        `${assignedClassroom.name} (Section ${mapping.section}) is already booked by "${roomConflict.examName}" on ${normDate} from ${formatTime12h(roomConflict.startTime)} to ${formatTime12h(roomConflict.endTime)}.`
       );
       conflictErr.statusCode = 409;
       conflictErr.conflictDetails = meta;
@@ -1376,9 +1376,9 @@ exports.updateExam = async (req, res) => {
         Array.isArray(d.sectionAllocations) && d.sectionAllocations.length > 0
           ? d.sectionAllocations.map((sa) => String(sa.section || '').trim().toUpperCase())
           : String(d.section || '')
-              .split(',')
-              .map((s) => s.trim().toUpperCase())
-              .filter(Boolean);
+            .split(',')
+            .map((s) => s.trim().toUpperCase())
+            .filter(Boolean);
       if (dSections.length === 0) return true;
       return dSections.some((s) => targetSectionSet.has(s));
     });
@@ -1692,8 +1692,8 @@ exports.updateExam = async (req, res) => {
       message: isPublishedOrLocked
         ? 'Published examination updated via controlled Admin audit correction (existing seating preserved).'
         : reallocated
-        ? 'Examination updated and seating allocations regenerated safely.'
-        : 'Examination updated successfully.',
+          ? 'Examination updated and seating allocations regenerated safely.'
+          : 'Examination updated successfully.',
       reallocated,
       data: attachExamPermissions(exam.toObject(), req.user),
     });
@@ -1765,9 +1765,9 @@ exports.deleteExam = async (req, res) => {
 
     const updatedSectionAllocations = Array.isArray(exam.sectionAllocations)
       ? exam.sectionAllocations.map((sa) => ({
-          ...(sa.toObject ? sa.toObject() : sa),
-          allocationStatus: 'CANCELLED',
-        }))
+        ...(sa.toObject ? sa.toObject() : sa),
+        allocationStatus: 'CANCELLED',
+      }))
       : [];
 
     let archivedExam = null;
@@ -2807,10 +2807,10 @@ exports.checkClassroomAvailability = async (req, res) => {
     let targetSections = Array.isArray(selectedSections) && selectedSections.length > 0
       ? selectedSections.map((s) => String(s).trim().toUpperCase())
       : group === 'ALL'
-      ? ['A1', 'A2', 'A3', 'A4', 'A5', 'A6']
-      : String(group).toUpperCase().includes('B')
-      ? ['A4', 'A5', 'A6']
-      : ['A1', 'A2', 'A3'];
+        ? ['A1', 'A2', 'A3', 'A4', 'A5', 'A6']
+        : String(group).toUpperCase().includes('B')
+          ? ['A4', 'A5', 'A6']
+          : ['A1', 'A2', 'A3'];
 
     // Batch load active classrooms once and run a single conflict query across all target rooms
     const activeRooms = await Classroom.find({ isActive: { $ne: false } })
@@ -3011,9 +3011,9 @@ exports.createCentralizedExam = async (req, res) => {
         Array.isArray(d.sectionAllocations) && d.sectionAllocations.length > 0
           ? d.sectionAllocations.map((sa) => String(sa.section || '').trim().toUpperCase())
           : String(d.section || '')
-              .split(',')
-              .map((s) => s.trim().toUpperCase())
-              .filter(Boolean);
+            .split(',')
+            .map((s) => s.trim().toUpperCase())
+            .filter(Boolean);
       if (dSections.length === 0) return true;
       return dSections.some((s) => requestedSectionSet.has(s));
     });
@@ -3313,6 +3313,449 @@ exports.createCentralizedExam = async (req, res) => {
       success: false,
       message: error?.message || 'Failed to create centralized examination.',
       ...(error?.conflictDetails && { conflictDetails: error.conflictDetails }),
+    });
+  }
+};
+
+// @desc    Get ONLY the single current active (or next upcoming) examination
+// @route   GET /api/exams/current
+// @access  Private (Admin, Faculty scoped to own exams)
+exports.getCurrentExamination = async (req, res) => {
+  try {
+    const effectiveNow = getEffectiveNow(req);
+    await schedulerService.completeOverdueExams(req.headers['x-test-timestamp'] ? effectiveNow : null);
+
+    const query = {
+      isDeleted: { $ne: true },
+      status: { $nin: ['COMPLETED', 'CANCELLED', 'FAILED'] },
+      approvalStatus: { $nin: ['CANCELLED', 'REJECTED'] },
+    };
+
+    if (req.user && req.user.role === 'faculty') {
+      const facOr = [{ createdBy: req.user._id }, { facultyId: req.user._id }];
+      if (req.user.name) {
+        const nameRegex = new RegExp(escapeRegExp(req.user.name.trim()), 'i');
+        facOr.push({ facultyName: { $regex: nameRegex } });
+        facOr.push({ 'sectionAllocations.facultyName': { $regex: nameRegex } });
+      }
+      query.$or = facOr;
+    }
+
+    const candidates = await Exam.find(query)
+      .select('-rosterSnapshot -sectionAllocations.rosterSnapshot')
+      .populate('createdBy', 'name email role')
+      .populate('classroomId', 'name roomNumber totalCapacity availableCapacity block floor')
+      .populate('currentAllocationId', 'version status publishedAt totalOccupiedSeats')
+      .lean();
+
+    const scoped = candidates.filter((ex) =>
+      req.user?.role === 'faculty' ? canFacultyViewExam(req.user, ex) : true
+    );
+
+    const resolveWindowBounds = (ex) => {
+      const normDate = normalizeDateStr(ex.examDate);
+      let startDT = ex.startDateTime ? new Date(ex.startDateTime) : null;
+      let endDT = ex.endDateTime ? new Date(ex.endDateTime) : null;
+      if ((!startDT || Number.isNaN(startDT.getTime())) && normDate && ex.startTime) {
+        try { startDT = parseKolkataDateTime(normDate, ex.startTime); } catch { }
+      }
+      if ((!endDT || Number.isNaN(endDT.getTime())) && normDate && ex.endTime) {
+        try {
+          const parsed = parseExamDateRange(normDate, ex.startTime || '09:00 AM', ex.endTime, null, {
+            allowOvernight: Boolean(ex.allowOvernight),
+            session: ex.session,
+          });
+          startDT = startDT || parsed.startDateTime;
+          endDT = parsed.endDateTime;
+        } catch { }
+      }
+      const pubDT = ex.publicationTime
+        ? new Date(ex.publicationTime)
+        : startDT
+          ? getPublicationTime(startDT)
+          : null;
+      return { normDate, startDT, endDT, pubDT };
+    };
+
+    const withBounds = scoped.map((ex) => ({ ex, ...resolveWindowBounds(ex) }));
+    const sortByStartAsc = (a, b) => {
+      const ta = a.startDT ? a.startDT.getTime() : Number.MAX_SAFE_INTEGER;
+      const tb = b.startDT ? b.startDT.getTime() : Number.MAX_SAFE_INTEGER;
+      return ta - tb;
+    };
+
+    const activeMatches = withBounds
+      .filter(({ ex, startDT, endDT, pubDT }) => {
+        if (ex.status === 'ONGOING') return true;
+        if (!endDT || effectiveNow >= endDT) return false;
+        if (startDT && effectiveNow >= startDT) return true;
+        if (pubDT && ex.visibilityStatus === 'PUBLISHED' && effectiveNow >= pubDT) return true;
+        return false;
+      })
+      .sort(sortByStartAsc);
+
+    let chosen = null;
+    let mode = 'NONE';
+    let statusLabel = 'No Scheduled Examination';
+
+    if (activeMatches.length > 0) {
+      chosen = activeMatches[0];
+      mode = 'ACTIVE';
+      statusLabel = 'Active Examination';
+    } else {
+      const upcomingMatches = withBounds
+        .filter(({ endDT, startDT }) => {
+          const bound = endDT || startDT;
+          return !bound || bound > effectiveNow;
+        })
+        .sort(sortByStartAsc);
+
+      if (upcomingMatches.length > 0) {
+        chosen = upcomingMatches[0];
+        mode = 'UPCOMING';
+        statusLabel = 'Upcoming Examination';
+      }
+    }
+
+    if (!chosen) {
+      return res.status(200).json({
+        success: true,
+        serverNow: effectiveNow.toISOString(),
+        mode: 'NONE',
+        statusLabel,
+        data: null,
+        message: 'No active or upcoming examinations are scheduled.',
+      });
+    }
+
+    const enriched = attachExamPermissions({ ...chosen.ex }, req.user);
+    enriched.examType = resolveExamType(enriched);
+    enriched.sessionLabel = formatSessionLabel(enriched.session, enriched.startTime);
+    enriched.startTime = formatTime12h(enriched.startTime || chosen.startDT);
+    enriched.endTime = formatTime12h(enriched.endTime || chosen.endDT);
+    enriched.publicationTimeStr =
+      enriched.publicationTimeStr || (chosen.pubDT ? formatTime12h(chosen.pubDT) : '');
+    enriched.displayMode = mode;
+    enriched.displayStatusLabel = statusLabel;
+
+    return res.status(200).json({
+      success: true,
+      serverNow: effectiveNow.toISOString(),
+      mode,
+      statusLabel,
+      data: enriched,
+    });
+  } catch (error) {
+    console.error('[Get Current Examination Error]:', error);
+    return res.status(500).json({
+      success: false,
+      message: error?.message || 'Failed to retrieve the current examination.',
+    });
+  }
+};
+
+// @desc    Load single-section student roster filtered logically by examId, subjectCode, section & classroomId
+// @route   GET /api/exams/section-roster
+// @access  Private (Admin, Faculty scoped to own mappings)
+exports.getSectionRoster = async (req, res) => {
+  try {
+    const { examId, subjectCode, subjectName, section, classroomId } = req.query;
+    const targetSection = String(section || '').trim().toUpperCase();
+
+    if (!targetSection) {
+      return res.status(400).json({
+        success: false,
+        message: 'Section is required to load the examination roster.',
+      });
+    }
+
+    const normCode = String(subjectCode || '').trim().toUpperCase();
+    if (!normCode && !subjectName) {
+      return res.status(400).json({
+        success: false,
+        message: 'Subject selection is required to load the section roster.',
+      });
+    }
+
+    let exam = null;
+    if (examId && mongoose.Types.ObjectId.isValid(examId)) {
+      exam = await Exam.findById(examId)
+        .select('-rosterSnapshot -sectionAllocations.rosterSnapshot')
+        .populate('classroomId', 'name roomNumber block floor totalCapacity')
+        .populate('sectionAllocations.classroomId', 'name roomNumber block floor totalCapacity')
+        .lean();
+
+      if (exam && !exam.isDeleted && req.user?.role === 'faculty' && !canFacultyViewExam(req.user, exam)) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied. You can only view examination rosters assigned to you.',
+        });
+      }
+      if (exam?.isDeleted) exam = null;
+    }
+
+    // 1. Resolve matching FacultyMapping strictly for this single section & subject
+    const mappingAnd = [{ isCurrent: true }, { section: targetSection }];
+    if (normCode) {
+      mappingAnd.push({ subjectCode: normCode });
+    } else if (subjectName) {
+      mappingAnd.push({ subjectName: { $regex: new RegExp(`^${escapeRegExp(String(subjectName).trim())}$`, 'i') } });
+    }
+    if (exam?.academicYear) {
+      mappingAnd.push({ academicYear: exam.academicYear });
+    }
+    if (exam?.semester) {
+      mappingAnd.push({ semester: exam.semester });
+    }
+
+    let mapping = await FacultyMapping.findOne({ $and: mappingAnd }).lean();
+    if (!mapping && (exam?.academicYear || exam?.semester)) {
+      const relaxedAnd = [{ isCurrent: true }, { section: targetSection }];
+      if (normCode) relaxedAnd.push({ subjectCode: normCode });
+      else if (subjectName) {
+        relaxedAnd.push({ subjectName: { $regex: new RegExp(`^${escapeRegExp(String(subjectName).trim())}$`, 'i') } });
+      }
+      mapping = await FacultyMapping.findOne({ $and: relaxedAnd }).lean();
+    }
+
+    if (req.user?.role === 'faculty' && mapping && !isFacultyMappingOwner(req.user, mapping)) {
+      return res.status(403).json({
+        success: false,
+        message: `Access denied. Section ${targetSection} for ${normCode || subjectName} is not assigned to your faculty account.`,
+      });
+    }
+
+    // 2. Resolve Classroom (selected override > exam section allocation > exam classroom > default section classroom)
+    let resolvedClassroom = null;
+    if (classroomId && mongoose.Types.ObjectId.isValid(classroomId)) {
+      resolvedClassroom = await Classroom.findById(classroomId)
+        .select('name roomNumber block floor totalCapacity availableCapacity')
+        .lean();
+    }
+    if (!resolvedClassroom && exam?.sectionAllocations?.length) {
+      const secAlloc = exam.sectionAllocations.find(
+        (sa) => String(sa.section || '').trim().toUpperCase() === targetSection
+      );
+      if (secAlloc?.classroomId && typeof secAlloc.classroomId === 'object') {
+        resolvedClassroom = secAlloc.classroomId;
+      } else if (secAlloc?.classroomId && mongoose.Types.ObjectId.isValid(secAlloc.classroomId)) {
+        resolvedClassroom = await Classroom.findById(secAlloc.classroomId)
+          .select('name roomNumber block floor totalCapacity availableCapacity')
+          .lean();
+      } else if (secAlloc?.roomNumber) {
+        resolvedClassroom = await Classroom.findOne({ roomNumber: secAlloc.roomNumber, isActive: true })
+          .select('name roomNumber block floor totalCapacity availableCapacity')
+          .lean();
+      }
+    }
+    if (!resolvedClassroom) {
+      const defRoomNum = classroomMappingService.getRoomNumberForSection(targetSection);
+      if (defRoomNum) {
+        resolvedClassroom = await Classroom.findOne({ roomNumber: defRoomNum, isActive: true })
+          .select('name roomNumber block floor totalCapacity availableCapacity')
+          .lean();
+      }
+    }
+
+    // Check potential classroom conflict when exam date & timing context exist
+    let classroomConflict = null;
+    if (resolvedClassroom?._id && exam?.examDate && exam?.startDateTime && exam?.endDateTime) {
+      try {
+        const conflict = await classroomMappingService.checkClassroomConflict(
+          resolvedClassroom._id,
+          exam.examDate,
+          exam.startDateTime,
+          exam.endDateTime,
+          exam.session,
+          exam._id
+        );
+        if (conflict) {
+          classroomConflict = {
+            existingExamId: conflict._id,
+            existingExamName: conflict.examName || conflict.subjectName,
+            message:
+              conflict.conflictMeta?.message ||
+              `${resolvedClassroom.name} is already booked by "${conflict.examName}" on ${exam.examDate}.`,
+          };
+        }
+      } catch { }
+    }
+
+    // 3. Build single-section deduplicated roster (Seat details from Allocation when available)
+    const seatByReg = new Map();
+    if (exam?._id) {
+      const allocs = await Allocation.find({ examId: exam._id, isCurrent: true })
+        .select('section students classroomId')
+        .lean();
+
+      const allocClassroomIds = allocs.map((a) => a.classroomId).filter(Boolean);
+      const roomDocs = allocClassroomIds.length
+        ? await Classroom.find({ _id: { $in: allocClassroomIds } }).select('name roomNumber').lean()
+        : [];
+      const roomMap = new Map(roomDocs.map((r) => [String(r._id), r]));
+
+      for (const alloc of allocs) {
+        for (const st of alloc.students || []) {
+          const stSec = String(st.section || alloc.section || '').trim().toUpperCase();
+          if (stSec !== targetSection) continue;
+          const reg = String(st.registrationNumber || '').trim().toUpperCase();
+          if (!reg || seatByReg.has(reg)) continue;
+          const allocRoom = st.classroomId ? roomMap.get(String(st.classroomId)) : roomMap.get(String(alloc.classroomId));
+          seatByReg.set(reg, {
+            registrationNumber: reg,
+            studentName: st.name || st.studentName || 'Student',
+            section: targetSection,
+            classroomName: st.classroomName || allocRoom?.name || resolvedClassroom?.name || '',
+            roomNumber: st.roomNumber || allocRoom?.roomNumber || resolvedClassroom?.roomNumber || '',
+            seatId: st.seatId || '',
+            rowNumber: st.rowNumber || null,
+            benchNumber: st.benchNumber || null,
+            chairNumber: st.seatNumber || null,
+            questionPaperSet: st.questionPaperSet || '',
+          });
+        }
+      }
+
+      if (seatByReg.size === 0) {
+        const examStudents = await Student.find({
+          examId: exam._id,
+          section: targetSection,
+          status: 'active',
+        })
+          .sort({ registrationNumber: 1 })
+          .lean();
+        for (const es of examStudents) {
+          const reg = String(es.registrationNumber || '').trim().toUpperCase();
+          if (!reg || seatByReg.has(reg)) continue;
+          seatByReg.set(reg, {
+            registrationNumber: reg,
+            studentName: es.name || 'Student',
+            section: targetSection,
+            classroomName: resolvedClassroom?.name || '',
+            roomNumber: resolvedClassroom?.roomNumber || '',
+            seatId: '',
+            rowNumber: null,
+            benchNumber: null,
+            chairNumber: null,
+            questionPaperSet: '',
+          });
+        }
+      }
+    }
+
+    const studentsMap = new Map();
+    if (mapping && Array.isArray(mapping.students) && mapping.students.length > 0) {
+      for (const st of mapping.students) {
+        const reg = String(st.registrationNumber || '').trim().toUpperCase();
+        if (!reg || studentsMap.has(reg)) continue;
+        const allocated = seatByReg.get(reg);
+        studentsMap.set(reg, {
+          registrationNumber: reg,
+          studentName: allocated?.studentName || st.studentName || st.name || 'Student',
+          section: targetSection,
+          classroomName: resolvedClassroom?.name || allocated?.classroomName || '',
+          roomNumber: resolvedClassroom?.roomNumber || allocated?.roomNumber || '',
+          seatId: allocated?.seatId || '',
+          seatNumber: allocated?.seatId
+            ? `${allocated.seatId}${allocated.chairNumber ? ` (Chair ${allocated.chairNumber})` : ''}`
+            : '',
+          rowNumber: allocated?.rowNumber || null,
+          benchNumber: allocated?.benchNumber || null,
+          chairNumber: allocated?.chairNumber || null,
+          questionPaperSet: allocated?.questionPaperSet || '',
+        });
+      }
+    } else if (seatByReg.size > 0) {
+      for (const [reg, allocated] of seatByReg.entries()) {
+        studentsMap.set(reg, {
+          ...allocated,
+          classroomName: resolvedClassroom?.name || allocated.classroomName || '',
+          roomNumber: resolvedClassroom?.roomNumber || allocated.roomNumber || '',
+          seatNumber: allocated.seatId
+            ? `${allocated.seatId}${allocated.chairNumber ? ` (Chair ${allocated.chairNumber})` : ''}`
+            : '',
+        });
+      }
+    } else {
+      const enrollQuery = { section: targetSection };
+      if (normCode) enrollQuery.subjectCode = normCode;
+      else if (subjectName) {
+        enrollQuery.subjectName = { $regex: new RegExp(`^${escapeRegExp(String(subjectName).trim())}$`, 'i') };
+      }
+      const enrollments = await StudentEnrollment.find(enrollQuery).sort({ rollNumber: 1 }).lean();
+      for (const en of enrollments) {
+        const reg = String(en.rollNumber || '').trim().toUpperCase();
+        if (!reg || studentsMap.has(reg)) continue;
+        studentsMap.set(reg, {
+          registrationNumber: reg,
+          studentName: en.studentName || 'Student',
+          section: targetSection,
+          classroomName: resolvedClassroom?.name || '',
+          roomNumber: resolvedClassroom?.roomNumber || '',
+          seatId: '',
+          seatNumber: '',
+          rowNumber: null,
+          benchNumber: null,
+          chairNumber: null,
+          questionPaperSet: '',
+        });
+      }
+    }
+
+    const sortedStudents = Array.from(studentsMap.values())
+      .sort((a, b) => a.registrationNumber.localeCompare(b.registrationNumber))
+      .map((st, idx) => ({
+        sNo: idx + 1,
+        ...st,
+      }));
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        exam: exam
+          ? {
+            _id: exam._id,
+            examName: exam.examName,
+            examType: resolveExamType(exam),
+            examDate: exam.examDate,
+            session: exam.session,
+            sessionLabel: formatSessionLabel(exam.session, exam.startTime),
+            startTime: formatTime12h(exam.startTime),
+            endTime: formatTime12h(exam.endTime),
+            publicationTimeStr: exam.publicationTimeStr || (exam.publicationTime ? formatTime12h(exam.publicationTime) : ''),
+            approvalStatus: exam.approvalStatus,
+            visibilityStatus: exam.visibilityStatus,
+            status: exam.status,
+          }
+          : null,
+        subject: {
+          subjectName: mapping?.subjectName || exam?.subjectName || subjectName || '',
+          subjectCode: mapping?.subjectCode || normCode || exam?.subjectCode || '',
+          academicYear: mapping?.academicYear || exam?.academicYear || '2026-2027',
+          semester: mapping?.semester || exam?.semester || 'I Semester',
+        },
+        section: targetSection,
+        facultyName: mapping?.facultyName || exam?.facultyName || '',
+        classroom: resolvedClassroom
+          ? {
+            _id: resolvedClassroom._id,
+            name: resolvedClassroom.name,
+            roomNumber: resolvedClassroom.roomNumber,
+            block: resolvedClassroom.block || 'ET BLOCK',
+            floor: resolvedClassroom.floor || '3rd Floor',
+            totalCapacity: resolvedClassroom.totalCapacity,
+          }
+          : null,
+        classroomConflict,
+        totalStudents: sortedStudents.length,
+        students: sortedStudents,
+      },
+    });
+  } catch (error) {
+    console.error('[Get Section Roster Error]:', error);
+    return res.status(500).json({
+      success: false,
+      message: error?.message || 'Failed to load section roster.',
     });
   }
 };

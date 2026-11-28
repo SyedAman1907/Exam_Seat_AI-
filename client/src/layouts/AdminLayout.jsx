@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Outlet, NavLink, useNavigate, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import ErrorBoundary from '../components/ErrorBoundary';
+import ThemeToggle from '../components/ThemeToggle';
 import {
   LayoutDashboard,
   Calendar,
@@ -118,7 +119,7 @@ const AdminLayout = () => {
   );
 
   return (
-    <div className="min-h-screen bg-[#F5F7FA] flex flex-col font-sans">
+    <div className="min-h-screen bg-[#F7F7FB] dark:bg-[#10131C] flex flex-col font-sans overflow-x-hidden">
       <a
         href="#admin-main-content"
         className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:px-4 focus:py-2 focus:rounded-lg focus:bg-primary focus:text-white focus:text-xs focus:font-bold"
@@ -127,7 +128,7 @@ const AdminLayout = () => {
       </a>
 
       {/* Top Academic Header */}
-      <header className="w-full bg-white border-b border-slate-200 sticky top-0 z-40 shadow-2xs">
+      <header className="w-full bg-white/90 dark:bg-[#1B2030]/90 backdrop-blur-md border-b border-slate-200 dark:border-[#30384A] sticky top-0 z-40 shadow-2xs">
         <div className="px-3 sm:px-6 lg:px-8 py-2.5 min-h-[4.5rem] flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5 sm:gap-3.5 min-w-0 flex-1">
             <button
@@ -159,6 +160,7 @@ const AdminLayout = () => {
 
           {/* Right Utility & Profile */}
           <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+            <ThemeToggle className="h-9 px-2.5 sm:px-3" />
             <Link
               to="/student/seat-finder"
               target="_blank"

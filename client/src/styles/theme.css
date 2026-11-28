@@ -1,44 +1,69 @@
-/* ExamSeat AI — RGMCET Academic Design System Tokens */
+/* ExamSeat AI — Enterprise Design System Tokens (Light & Dark Theme) */
 :root {
-  /* Color Palette */
-  --es-primary: #2457A7;
-  --es-primary-hover: #1B4282;
-  --es-primary-soft: #EEF4FF;
-  --es-navy-900: #0F172A;
-  --es-navy-800: #14243A;
-  --es-canvas: #F5F7FA;
+  /* Light Theme Palette (White & Soft Pink) */
+  --es-primary: #E83E8C;
+  --es-primary-hover: #D02B77;
+  --es-primary-soft: #F8DCEB;
+  --es-secondary: #F8DCEB;
+  --es-navy-900: #172033;
+  --es-navy-800: #172033;
+  --es-canvas: #F7F7FB;
   --es-surface: #FFFFFF;
-  --es-surface-muted: #F8FAFC;
-  --es-border: #E2E8F0;
-  --es-border-strong: #CBD5E1;
+  --es-surface-glass: rgba(255, 255, 255, 0.86);
+  --es-surface-muted: #F8F9FC;
+  --es-border: #E5E7EB;
+  --es-border-strong: #D1D5DB;
 
-  /* Text Contrast Scale (WCAG AA compliant on white/slate-50) */
-  --es-text-primary: #14243A;
+  /* Text Scale */
+  --es-text-primary: #172033;
   --es-text-secondary: #334155;
-  --es-text-muted: #475569;
+  --es-text-muted: #64748B;
 
   /* Semantic Status */
-  --es-success: #198754;
-  --es-warning: #B45309;
+  --es-success: #16A34A;
+  --es-warning: #D97706;
   --es-danger: #DC2626;
 
   /* Radii & Elevation */
   --es-radius-sm: 0.5rem;
   --es-radius-md: 0.625rem;
   --es-radius-lg: 0.875rem;
-  --es-shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
-  --es-shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.07), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --es-shadow-xs: 0 1px 2px rgba(23, 32, 51, 0.04);
+  --es-shadow-sm: 0 4px 16px rgba(23, 32, 51, 0.05), 0 1px 3px rgba(23, 32, 51, 0.04);
 
   /* Motion Timing */
   --es-transition-fast: 150ms cubic-bezier(0.2, 0, 0, 1);
 
-  /* Backward-compatible variable aliases */
+  /* Variable aliases */
   --color-primary: var(--es-primary);
   --color-primary-hover: var(--es-primary-hover);
   --color-navy: var(--es-navy-800);
   --color-accent-green: var(--es-success);
-  --color-accent-amber: #D97706;
+  --color-accent-amber: var(--es-warning);
   --color-accent-red: var(--es-danger);
   --color-bg-light: var(--es-canvas);
   --color-border-subtle: var(--es-border);
+}
+
+:root[data-theme='dark'],
+html.dark {
+  --es-primary: #F472B6;
+  --es-primary-hover: #EC4899;
+  --es-primary-soft: rgba(244, 114, 182, 0.16);
+  --es-secondary: rgba(244, 114, 182, 0.18);
+  --es-navy-900: #F8FAFC;
+  --es-navy-800: #F8FAFC;
+  --es-canvas: #10131C;
+  --es-surface: #1B2030;
+  --es-surface-glass: rgba(27, 32, 48, 0.86);
+  --es-surface-muted: #151A28;
+  --es-border: #30384A;
+  --es-border-strong: #3E4860;
+
+  --es-text-primary: #F8FAFC;
+  --es-text-secondary: #E2E8F0;
+  --es-text-muted: #A1A1AA;
+
+  --es-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.28);
+  --es-shadow-sm: 0 6px 20px rgba(0, 0, 0, 0.32);
 }

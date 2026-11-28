@@ -408,7 +408,17 @@ async function run() {
     assert.strictEqual(badPubAfterStart.status, 400);
     assert.strictEqual(badPubAfterStart.json.code, 'PUBLICATION_AFTER_START');
 
-    // 7. Faculty creates valid UNIT 1 examination with custom 09:20 AM publication time
+    // 7. Current Examination & Single-Section Roster verification
+    const currentNone = await httpRequest(port, {
+      method: 'GET',
+      path: '/api/exams/current',
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    assert.strictEqual(currentNone.status, 200);
+    assert.strictEqual(currentNone.json.mode, 'NONE');
+    assert.strictEqual(currentNone.json.data, null);
+
+    // Faculty creates valid UNIT 1 examination with custom 09:20 AM publication time
     const createPayload = {
       examType: 'UNIT 1',
       academicYear: '2026-2027',
@@ -484,6 +494,35 @@ async function run() {
     assert.strictEqual(secPdfRes.buffer.slice(0, 5).toString('utf8'), '%PDF-');
     assert.strictEqual(zipRes.buffer.slice(0, 2).toString('utf8'), 'PK');
     assert.strictEqual(pdfRes.buffer.slice(0, 5).toString('utf8'), '%PDF-');
+
+    // Single Current Examination & Single-Section Roster endpoint assertions
+    const currentUpcoming = await httpRequest(port, {
+      method: 'GET',
+      path: '/api/exams/current',
+      headers: { Authorization: `Bearer ${facToken}` },
+    });
+    assert.strictEqual(currentUpcoming.status, 200);
+    assert.strictEqual(currentUpcoming.json.mode, 'UPCOMING');
+    assert.strictEqual(String(currentUpcoming.json.data._id), String(examId));
+
+    const rosterA2 = await httpRequest(port, {
+      method: 'GET',
+      path: `/api/exams/section-roster?examId=${examId}&subjectCode=20A05E2E&section=A2`,
+      headers: { Authorization: `Bearer ${facToken}` },
+    });
+    assert.strictEqual(rosterA2.status, 200);
+    assert.strictEqual(rosterA2.json.data.section, 'A2');
+    assert.strictEqual(rosterA2.json.data.totalStudents, 72);
+    assert.ok(rosterA2.json.data.students.every((s) => s.section === 'A2'), 'Section roster must contain ONLY section A2 students');
+    assert.ok(rosterA2.json.data.students.every((s) => s.seatNumber && s.seatNumber !== 'Pending allocation'), 'Allocated section roster must include seat numbers');
+
+    // Cross-faculty isolation on section-roster (facToken cannot inspect otherFaculty's section A4 -> 403)
+    const unownedRoster = await httpRequest(port, {
+      method: 'GET',
+      path: '/api/exams/section-roster?subjectCode=20A05CLD&section=A4',
+      headers: { Authorization: `Bearer ${facToken}` },
+    });
+    assert.strictEqual(unownedRoster.status, 403);
 
     // Faculty CANNOT approve or publish (403)
     assert.strictEqual((await httpRequest(port, { method: 'POST', path: `/api/exams/${examId}/approve`, headers: { Authorization: `Bearer ${facToken}` }, body: {} })).status, 403);

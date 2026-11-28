@@ -15,14 +15,18 @@
   #root {
     width: 100%;
     max-width: 100%;
+    overflow-x: hidden;
   }
 
   body {
-    @apply bg-[#F5F7FA] text-navy-800 font-sans m-0 antialiased;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    margin: 0;
+    -webkit-font-smoothing: antialiased;
+    background-color: var(--es-canvas);
     color: var(--es-text-primary);
+    transition: background-color 180ms ease, color 180ms ease;
   }
 
-  /* Accessible keyboard focus indicator across all interactive controls */
   a:focus-visible,
   button:focus-visible,
   input:focus-visible,
@@ -38,7 +42,18 @@
     background-color: var(--es-surface);
     border: 1px solid var(--es-border);
     border-radius: var(--es-radius-lg);
-    box-shadow: var(--es-shadow-xs);
+    box-shadow: var(--es-shadow-sm);
+    color: var(--es-text-primary);
+  }
+
+  .es-glass-card {
+    background-color: var(--es-surface-glass);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid var(--es-border);
+    border-radius: var(--es-radius-lg);
+    box-shadow: var(--es-shadow-sm);
+    color: var(--es-text-primary);
   }
 
   .es-eyebrow {
@@ -46,28 +61,83 @@
     color: var(--es-primary);
   }
 
-  .es-btn-primary {
-    @apply inline-flex items-center justify-center font-semibold text-white transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed;
-    background-color: var(--es-primary);
+  .es-input {
+    height: 2.5rem;
+    width: 100%;
+    padding: 0 0.75rem;
+    font-size: 0.75rem;
+    font-weight: 500;
     border-radius: var(--es-radius-md);
+    border: 1px solid var(--es-border);
+    background-color: var(--es-surface);
+    color: var(--es-text-primary);
+    transition: border-color 150ms ease, box-shadow 150ms ease;
+  }
+  .es-input:focus {
+    outline: none;
+    border-color: var(--es-primary);
+    box-shadow: 0 0 0 3px var(--es-primary-soft);
+  }
+  .es-input:read-only,
+  .es-input:disabled {
+    background-color: var(--es-surface-muted);
+    color: var(--es-text-muted);
+    cursor: default;
+  }
+
+  .es-btn-primary {
+    @apply inline-flex items-center justify-center font-semibold transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed;
+    background-color: var(--es-primary);
+    color: #FFFFFF;
+    border-radius: var(--es-radius-md);
+  }
+  html.dark .es-btn-primary {
+    color: #10131C;
+    font-weight: 700;
   }
   .es-btn-primary:hover:not(:disabled) {
     background-color: var(--es-primary-hover);
   }
 
   .es-btn-secondary {
-    @apply inline-flex items-center justify-center font-semibold bg-white transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed;
-    color: var(--es-text-secondary);
-    border: 1px solid var(--es-border-strong);
+    @apply inline-flex items-center justify-center font-semibold transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed;
+    background-color: var(--es-surface);
+    color: var(--es-text-primary);
+    border: 1px solid var(--es-border);
     border-radius: var(--es-radius-md);
   }
   .es-btn-secondary:hover:not(:disabled) {
     background-color: var(--es-surface-muted);
-    color: var(--es-text-primary);
+    border-color: var(--es-primary);
   }
 }
 
-/* Respect user reduced-motion preference */
+/* Automatic dark-mode contrast harmonization across shared utility surfaces */
+html.dark .bg-white {
+  background-color: #1B2030 !important;
+}
+html.dark .bg-\[\#F5F7FA\],
+html.dark .bg-\[\#F7F7FB\],
+html.dark .bg-slate-50,
+html.dark .bg-slate-100 {
+  background-color: #151A28 !important;
+}
+html.dark .border-slate-100,
+html.dark .border-slate-200,
+html.dark .border-slate-300 {
+  border-color: #30384A !important;
+}
+html.dark .text-slate-600,
+html.dark .text-slate-500,
+html.dark .text-slate-400 {
+  color: #A1A1AA !important;
+}
+html.dark .text-slate-700,
+html.dark .text-slate-800,
+html.dark .text-slate-900 {
+  color: #F8FAFC !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -79,28 +149,21 @@
   }
 }
 
-/* Clean print formatting for student seating slips */
 @media print {
   body {
     background: #FFFFFF !important;
+    color: #172033 !important;
   }
 }
 
-/* Subtle institutional scrollbars */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
-
 ::-webkit-scrollbar-track {
-  background: #F8FAFC;
+  background: var(--es-surface-muted);
 }
-
 ::-webkit-scrollbar-thumb {
-  background: #CBD5E1;
+  background: var(--es-border-strong);
   border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: #94A3B8;
 }
