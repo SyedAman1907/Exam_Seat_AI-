@@ -2,22 +2,40 @@ const Classroom = require('../models/Classroom');
 const AuditLog = require('../models/AuditLog');
 const { sendControllerError } = require('../utils/controllerError');
 
+function resolveClassroomCapacity(classroom) {
+  const doc = classroom.toObject ? classroom.toObject() : classroom;
+  const stored = Number(doc.totalCapacity || 0);
+  const computed = Classroom.computeCapacity(doc);
+  const total = computed > 0 ? computed : stored;
+  return {
+    ...doc,
+    totalCapacity: total,
+    availableCapacity: total,
+  };
+}
+
 // @desc    Get all classrooms
 // @route   GET /api/classrooms
 // @access  Private
 exports.getClassrooms = async (req, res) => {
   try {
     const filter = req.query.all === 'true' ? {} : { isActive: { $ne: false } };
-    const includeLayout = req.query.includeLayout === 'true';
     const query = Classroom.find(filter).sort({ roomNumber: 1 });
-    if (!includeLayout) {
-      query.select('-rows');
-    }
     const classrooms = await query.lean();
+    // Always derive capacity from the actual seat layout so the UI never displays zero
+    // capacity for legacy records whose stored totalCapacity was never backfilled.
+    const resolved = classrooms.map((c) => {
+      const computed = Classroom.computeCapacity(c);
+      return {
+        ...c,
+        totalCapacity: computed > 0 ? computed : Number(c.totalCapacity || 0),
+        availableCapacity: computed > 0 ? computed : Number(c.totalCapacity || 0),
+      };
+    });
     res.status(200).json({
       success: true,
-      count: classrooms.length,
-      data: classrooms,
+      count: resolved.length,
+      data: resolved,
     });
   } catch (error) {
     return sendControllerError(res, error, 'Classroom getClassrooms Error', 'Unable to load classrooms.');
@@ -33,7 +51,8 @@ exports.getClassroomById = async (req, res) => {
     if (!classroom) {
       return res.status(404).json({ success: false, message: 'Classroom not found' });
     }
-    res.status(200).json({ success: true, data: classroom });
+    const resolved = resolveClassroomCapacity(classroom);
+    res.status(200).json({ success: true, data: resolved });
   } catch (error) {
     return sendControllerError(res, error, 'Classroom getClassroomById Error', 'Unable to load classroom.');
   }

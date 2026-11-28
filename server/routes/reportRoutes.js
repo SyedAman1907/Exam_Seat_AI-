@@ -12,9 +12,9 @@ const {
   getSectionAttendancePDF,
   getCentralizedAttendanceZip,
 } = require('../controllers/reportController');
-const { protect } = require('../middleware/auth');
+const { protect, authorize } = require('../middleware/auth');
 
-router.use(protect);
+router.use(protect, authorize('admin', 'faculty'));
 
 // Global Master / Subject / Faculty exports
 router.get('/master-students-excel', getMasterStudentsExcel);

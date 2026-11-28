@@ -132,4 +132,23 @@ classroomSchema.pre('save', function (next) {
 
 classroomSchema.index({ isActive: 1, roomNumber: 1 });
 
+/**
+ * Compute total enabled (available) physical seat capacity from the classroom row/bench/seat layout.
+ * Disabled seats (isAvailable === false) are excluded from capacity.
+ */
+classroomSchema.statics.computeCapacity = function computeCapacity(classroom) {
+  if (!classroom) return 0;
+  const rows = classroom.rows || (classroom.toObject ? classroom.toObject().rows : null);
+  if (!Array.isArray(rows)) return 0;
+  let enabledCount = 0;
+  for (const row of rows) {
+    if (!row || !Array.isArray(row.benches)) continue;
+    for (const bench of row.benches) {
+      if (!bench || !Array.isArray(bench.seats)) continue;
+      enabledCount += bench.seats.filter((s) => s && s.isAvailable !== false).length;
+    }
+  }
+  return enabledCount;
+};
+
 module.exports = mongoose.model('Classroom', classroomSchema);

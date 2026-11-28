@@ -88,11 +88,14 @@ const ExaminationManagementView = () => {
   const [subjects, setSubjects] = useState([]);
   const [mappings, setMappings] = useState([]);
   const [classrooms, setClassrooms] = useState([]);
+  const [faculties, setFaculties] = useState([]);
   const [bookedRoomIds, setBookedRoomIds] = useState(new Set());
 
   // 4-Field Examination Configuration State
   const [selectedSubjectKey, setSelectedSubjectKey] = useState('');
   const [selectedSection, setSelectedSection] = useState('');
+  const [selectedGroup, setSelectedGroup] = useState('');
+  const [selectedFaculty, setSelectedFaculty] = useState('');
   const [selectedClassroomId, setSelectedClassroomId] = useState('');
 
   // Loaded Single-Section Roster State (Sections D & E)
@@ -202,13 +205,14 @@ const ExaminationManagementView = () => {
       setBanner(null);
 
       try {
-        const [examRes, subRes, mapRes, roomRes] = await Promise.all([
+        const [examRes, subRes, mapRes, roomRes, facRes] = await Promise.all([
           requestedExamId
             ? api.get(`/exams/${requestedExamId}`)
             : api.get('/exams/current'),
           api.get('/subjects'),
           api.get('/mappings'),
           api.get('/classrooms'),
+          api.get('/faculty'),
         ]);
 
         const examDoc = examRes.data?.data || null;
@@ -230,10 +234,12 @@ const ExaminationManagementView = () => {
           : Array.isArray(roomRes.data?.classrooms)
           ? roomRes.data.classrooms
           : [];
+        const nextFaculties = Array.isArray(facRes.data?.data) ? facRes.data.data : [];
 
         setSubjects(nextSubjects);
         setMappings(nextMappings);
         setClassrooms(nextRooms.filter((r) => r.isActive !== false));
+        setFaculties(nextFaculties.filter((f) => f.isActive !== false && f.role !== 'student'));
       } catch (err) {
         setBanner({
           type: 'error',
@@ -269,10 +275,13 @@ const ExaminationManagementView = () => {
     });
   }, [availableSubjects, currentExam]);
 
-  // Keep Section synced strictly to valid mapped sections for the selected Subject
+  // Keep Section synced strictly to valid mapped sections for the selected Subject.
+  // Reset dependent group & classroom selections whenever the section resolves.
   useEffect(() => {
     if (availableSections.length === 0) {
       setSelectedSection('');
+      setSelectedGroup('');
+      setSelectedClassroomId('');
       return;
     }
     setSelectedSection((prev) => {
@@ -433,6 +442,8 @@ const ExaminationManagementView = () => {
   // Examination Scheduling Modal helpers (Fixed IST AM/PM & Publication Time rules)
   const openScheduleModal = () => {
     setScheduleError('');
+    setSelectedGroup('');
+    setSelectedFaculty('');
     setScheduleForm({
       examType: 'UNIT 1',
       examName: buildDefaultExamTitle({
@@ -507,7 +518,16 @@ const ExaminationManagementView = () => {
       return;
     }
 
-    const sectionGroup = ['A1', 'A2', 'A3'].includes(selectedSection) ? 'Group A' : 'Group B';
+    if (!selectedGroup || !['Group A', 'Group B'].includes(selectedGroup)) {
+      setScheduleError('Please select a valid Candidate Group (Group A or Group B).');
+      return;
+    }
+    if (!selectedFaculty) {
+      setScheduleError('Please select a Faculty / Invigilator for this examination.');
+      return;
+    }
+
+    const sectionGroup = selectedGroup;
 
     setSubmittingSchedule(true);
     try {
@@ -523,6 +543,7 @@ const ExaminationManagementView = () => {
           subjectCode: selectedSubject.subjectCode,
           section: selectedSection,
           group: sectionGroup,
+          facultyName: selectedFaculty,
           classroomId: selectedClassroomId,
           examDate: scheduleForm.examDate,
           session: scheduleForm.session,
@@ -1325,6 +1346,42 @@ const ExaminationManagementView = () => {
                       Afternoon (PM)
                     </button>
                   </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold mb-1.5 text-[var(--es-text-primary)]">
+                    Candidate Group *
+                  </label>
+                  <select
+                    value={selectedGroup}
+                    onChange={(e) => setSelectedGroup(e.target.value)}
+                    disabled={availableSections.length === 0}
+                    className="es-input font-semibold"
+                  >
+                    <option value="">Select Group</option>
+                    <option value="Group A">Group A</option>
+                    <option value="Group B">Group B</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-bold mb-1.5 text-[var(--es-text-primary)]">
+                    Faculty / Invigilator *
+                  </label>
+                  <select
+                    value={selectedFaculty}
+                    onChange={(e) => setSelectedFaculty(e.target.value)}
+                    disabled={faculties.length === 0}
+                    className="es-input"
+                  >
+                    <option value="">Select Faculty</option>
+                    {faculties.map((f) => (
+                      <option key={String(f._id || f.id)} value={f.name}>
+                        {f.name} ({f.facultyId || '—'})
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
 

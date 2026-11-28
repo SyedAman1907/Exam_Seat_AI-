@@ -175,12 +175,56 @@ exports.getActiveExams = async (req, res) => {
           examDate: { $in: [iso, dmy, tomorrowIso, tomorrowDmy] },
         })
           .select(
-            'examName examType subjectName subjectCode examDate startTime endTime startDateTime endDateTime publicationTime publicationTimeStr allowOvernight session department section sections group academicYear studentCount approvalStatus visibilityStatus status'
+            'examName examType subjectName subjectCode examDate startTime endTime startDateTime endDateTime publicationTime publicationTimeStr allowOvernight session department section sections group academicYear studentCount approvalStatus visibilityStatus status sectionAllocations.section sectionAllocations.group sectionAllocations.rosterSnapshot'
           )
           .sort({ startDateTime: 1, startTime: 1, session: 1, section: 1 })
           .lean(),
       bypassCache
     );
+
+    // When authenticated as a student, strictly scope examinations to those where this
+    // student is allocated (by unique examination ID + student roster mapping). Never
+    // return the day's first/ambiguous examination to a different student.
+    if (req.user?.role === 'student') {
+      const studentRegNo = String(req.user.registrationNumber || '').trim().toUpperCase();
+      if (!studentRegNo) {
+        return res.status(403).json({
+          success: false,
+          code: 'FORBIDDEN_STUDENT_SCOPE',
+          message: 'Access denied. Student registration number not found in session.',
+        });
+      }
+
+      const [studentAllocs, directRosterExams] = await Promise.all([
+        Allocation.find({
+          isCurrent: true,
+          status: { $ne: 'DRAFT' },
+          'students.registrationNumber': studentRegNo,
+        })
+          .select('examId')
+          .lean(),
+        Exam.find({
+          isDeleted: { $ne: true },
+          'sectionAllocations.rosterSnapshot.registrationNumber': studentRegNo,
+        })
+          .select('_id')
+          .lean(),
+      ]);
+
+      const allocatedExamIds = new Set();
+      for (const a of studentAllocs || []) {
+        if (a.examId) allocatedExamIds.add(String(a.examId));
+      }
+      for (const e of directRosterExams || []) {
+        allocatedExamIds.add(String(e._id));
+      }
+
+      if (allocatedExamIds.size > 0) {
+        candidateExams = candidateExams.filter((ex) => allocatedExamIds.has(String(ex._id)));
+      } else {
+        candidateExams = [];
+      }
+    }
 
     // Keep today's exams, plus tomorrow's early-morning exams ONLY if their 20-min early access opens today in IST
     const todayExams = candidateExams.filter((ex) => {
@@ -726,7 +770,7 @@ exports.getStudentExams = async (req, res) => {
     }
 
     // Find approved examinations where this student is allocated or enrolled (never exposing other students)
-    const [allocDocs, enrollmentDocs, directExamIds] = await Promise.all([
+    const [allocDocs, directExamIds] = await Promise.all([
       Allocation.find({
         isCurrent: true,
         status: { $ne: 'DRAFT' },
@@ -734,7 +778,6 @@ exports.getStudentExams = async (req, res) => {
       })
         .select('examId students.$')
         .lean(),
-      StudentEnrollment.find({ rollNumber: regNo }).select('subjectCode subjectName section').lean(),
       Exam.find({
         isDeleted: { $ne: true },
         approvalStatus: 'APPROVED',
@@ -754,17 +797,15 @@ exports.getStudentExams = async (req, res) => {
       }
     }
 
-    const enrolledSubjectCodes = Array.from(
-      new Set(enrollmentDocs.map((e) => String(e.subjectCode || '').trim().toUpperCase()).filter(Boolean))
-    );
-
+    // Strictly identify examinations by unique examination ID + this student's allocation
+    // / roster snapshot mapping. Never fall back to matching by subject code alone, which
+    // would leak examinations from other sections, groups, or units to this student.
     const examQuery = {
       isDeleted: { $ne: true },
       approvalStatus: 'APPROVED',
       status: { $nin: ['CANCELLED', 'FAILED', 'DRAFT'] },
       $or: [
         ...(matchedExamIds.size > 0 ? [{ _id: { $in: Array.from(matchedExamIds) } }] : []),
-        ...(enrolledSubjectCodes.length > 0 ? [{ subjectCode: { $in: enrolledSubjectCodes } }] : []),
       ],
     };
 

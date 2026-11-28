@@ -145,9 +145,29 @@ async function ensureExamIndexes() {
     if (!hasSecRoomIntervalIndex) {
       await examsCollection.createIndex(
         { isDeleted: 1, 'sectionAllocations.classroomId': 1, startDateTime: 1, endDateTime: 1 },
-        { name: 'exam_sec_room_interval_idx', background: true }
+        { name: 'exam_sec_room_interval_idx' }
       );
       console.log('[Database Migration] Created availability index "exam_sec_room_interval_idx".');
+    }
+
+    // 5. Indexes for student-scoped seat/allocation lookups (Phase 2 & 4)
+    const allocationsCollection = db.collection('allocations');
+    const allocIndexes = await allocationsCollection.indexes();
+    const hasAllocExamIdx = allocIndexes.some((idx) => idx.name === 'allocation_exam_current_idx');
+    if (!hasAllocExamIdx) {
+      await allocationsCollection.createIndex(
+        { examId: 1, isCurrent: 1 },
+        { name: 'allocation_exam_current_idx' }
+      );
+      console.log('[Database Migration] Created allocation index "allocation_exam_current_idx".');
+    }
+    const hasAllocStudentIdx = allocIndexes.some((idx) => idx.name === 'allocation_student_current_idx');
+    if (!hasAllocStudentIdx) {
+      await allocationsCollection.createIndex(
+        { 'students.registrationNumber': 1, isCurrent: 1 },
+        { name: 'allocation_student_current_idx' }
+      );
+      console.log('[Database Migration] Created allocation student index "allocation_student_current_idx".');
     }
 
     // 4. Drop legacy single-field subjectCode unique index on subjects so different academic years/semesters can share codes
