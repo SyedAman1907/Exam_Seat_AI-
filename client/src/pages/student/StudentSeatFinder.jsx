@@ -582,6 +582,20 @@ const StudentSeatFinder = () => {
                     </div>
                   )}
 
+                  {currentAccess.state === 'OPEN' && !currentExam.seat && (
+                    <div className="es-glass-card p-7 text-center space-y-2.5 border border-amber-200 dark:border-amber-800">
+                      <AlertCircle size={22} className="text-amber-600 dark:text-amber-400 mx-auto" />
+                      <h3 className="text-sm font-bold text-amber-900 dark:text-amber-200">Seating Not Yet Assigned</h3>
+                      <p className="text-xs text-amber-800 dark:text-amber-300">
+                        Your seating record has not been assigned for this examination yet. Please contact the Exam Cell or refresh shortly.
+                      </p>
+                      <button type="button" onClick={fetchMyExams} className="es-btn-secondary text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-700">
+                        <RefreshCw size={14} />
+                        <span>Refresh</span>
+                      </button>
+                    </div>
+                  )}
+
                   {currentAccess.state === 'OPEN' && currentExam.seat && (
                     <section
                       aria-label="Examination Seating Slip"
@@ -625,6 +639,20 @@ const StudentSeatFinder = () => {
                           <span className="text-[#64748B] dark:text-[#A1A1AA] block text-[11px]">Date &amp; Timings</span>
                           <span className="font-semibold text-[#172033] dark:text-[#F8FAFC]">
                             {currentExam.examDate} • {formatSessionLabel(currentExam.session, currentExam.startTime)} ({formatExamTimeRange(currentExam)})
+                          </span>
+                        </div>
+                        {currentExam.seat.facultyName && (
+                          <div>
+                            <span className="text-[#64748B] dark:text-[#A1A1AA] block text-[11px]">Faculty / Invigilator</span>
+                            <span className="font-semibold text-[#172033] dark:text-[#F8FAFC]">
+                              {currentExam.seat.facultyName}
+                            </span>
+                          </div>
+                        )}
+                        <div className={currentExam.seat.facultyName ? '' : 'sm:col-span-2'}>
+                          <span className="text-[#64748B] dark:text-[#A1A1AA] block text-[11px]">Section</span>
+                          <span className="font-semibold text-[#172033] dark:text-[#F8FAFC]">
+                            Section {currentExam.seat.section}
                           </span>
                         </div>
                         <div className="sm:col-span-2">

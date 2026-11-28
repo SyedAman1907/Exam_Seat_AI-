@@ -811,11 +811,13 @@ exports.getStudentExams = async (req, res) => {
           const secAlloc = (ex.sectionAllocations || []).find((sa) => sa.section === matched.section);
           const roomNum = secAlloc?.roomNumber || matched.roomNumber || classroomMappingService.getRoomNumberForSection(matched.section) || '3010';
           const clsName = secAlloc?.classroomName || matched.classroomName || `ET BLOCK ${roomNum}`;
+          const assignedFaculty = secAlloc?.facultyName || matched.facultyName || ex.facultyName || 'Department Faculty';
           ownSeat = {
             registrationNumber: matched.registrationNumber,
             studentName: matched.name,
             section: matched.section || ex.section,
             group: matched.group || secAlloc?.group || ex.group,
+            facultyName: assignedFaculty,
             classroomName: clsName,
             classroomHall: clsName,
             roomNumber: roomNum,
