@@ -43,12 +43,13 @@ async function run() {
   const { port } = server.address();
 
   try {
+    const kappaOrigin = 'https://exam-seat-ai-kappa.vercel.app';
     const prodOrigin = 'https://exam-seat-ai-eta.vercel.app';
     const previewOrigin = 'https://exam-seat-8cbspyvcq-syedaman1907s-projects.vercel.app';
     const branchPreviewOrigin = 'https://exam-seat-ai-git-main-syedaman1907s-projects.vercel.app';
 
     // 1. Preflight OPTIONS for /api/auth/login from Vercel production & preview origins
-    for (const allowedOrigin of [prodOrigin, previewOrigin, branchPreviewOrigin]) {
+    for (const allowedOrigin of [kappaOrigin, prodOrigin, previewOrigin, branchPreviewOrigin]) {
       const loginPreflight = await sendRequest(port, {
         method: 'OPTIONS',
         path: '/api/auth/login',

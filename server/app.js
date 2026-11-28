@@ -71,8 +71,9 @@ const envOrigins = [
   .filter(Boolean);
 
 const DEFAULT_ALLOWED_ORIGINS = [
-  'https://examseatai.vercel.app',
+  'https://exam-seat-ai-kappa.vercel.app',
   'https://exam-seat-ai-eta.vercel.app',
+  'https://examseatai.vercel.app',
   'http://localhost:5173',
   'http://localhost:5174',
   'http://127.0.0.1:5173',
@@ -283,6 +284,8 @@ app.get('/api/health', (req, res) => {
   const dbHealth = getDbHealth();
   const isHealthy = dbHealth.connected;
   res.status(isHealthy ? 200 : 503).json({
+    success: true,
+    message: 'ExamSeat AI backend is running',
     status: isHealthy ? 'online' : 'degraded',
     backendStatus: 'online',
     database: {
